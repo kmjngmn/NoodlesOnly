@@ -1,0 +1,10 @@
+.git
+.venv
+.env
+.env.*
+data
+artifacts
+tests
+__pycache__
+*.pyc
+engstudy
