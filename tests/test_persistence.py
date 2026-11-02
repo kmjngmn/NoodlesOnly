@@ -96,8 +96,9 @@ class PersistentStorageTests(unittest.TestCase):
         connection.setup_schema()
         calls = connection.connection.execute.call_args_list
         self.assertIn('pg_advisory_xact_lock', calls[2].args[0])
-        schema = calls[3].args[0]
-        self.assertIn('CREATE SCHEMA IF NOT EXISTS study_app', schema)
+        self.assertIn('pg_namespace', calls[3].args[0])
+        schema = calls[4].args[0]
+        self.assertNotIn('CREATE SCHEMA', schema)
         self.assertIn('REVOKE ALL ON SCHEMA study_app FROM PUBLIC', schema)
         self.assertNotIn('DROP ', schema)
         connection.connection.commit.assert_called_once()

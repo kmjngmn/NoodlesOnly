@@ -72,7 +72,12 @@ class PostgresConnection:
 
     def setup_schema(self):
         with self:
-            self.connection.execute(Path(__file__).with_name('schema-postgres.sql').read_text())
+            exists = self.connection.execute(
+                "SELECT 1 FROM pg_namespace WHERE nspname='study_app'").fetchone()
+            if not exists:
+                self.connection.execute('CREATE SCHEMA study_app')
+            schema = Path(__file__).with_name('schema-postgres.sql').read_text()
+            self.connection.execute(schema.replace('CREATE SCHEMA IF NOT EXISTS study_app;', ''))
 
 
 class StorageError(RuntimeError):
