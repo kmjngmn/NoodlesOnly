@@ -56,15 +56,15 @@ function overview() {
  return `${weekbar()}${state.members.length?`<div class="member-grid">${state.members.map(m=>memberCard(m)).join('')}</div>`:'<div class="empty">참여자 없음</div>'}`;
 }
 function settlement() {
-  return `<button class="quiet" data-action="share">정산 공유</button>${weekbar()}${!state.closed?'<p class="settlement-status"><span class="badge">집계 중</span></p>':''}${state.totals.pending?`<p class="settlement-status"><span class="badge orange">확인 대기 ${state.totals.pending}건</span></p>`:''}<div class="summary-grid"><div><small>확정 벌금</small><strong>${Number(state.totals.fine||0).toLocaleString()}<small>원</small></strong></div><div><small>납부 완료</small><strong>${Number(state.totals.paid||0).toLocaleString()}<small>원</small></strong></div><div><small>벌금</small><strong>${Number(state.totals.unpaid||0).toLocaleString()}<small>원</small></strong></div></div>${state.members.length?`<div class="table-wrap"><table class="settlement-table"><thead><tr><th scope="col">별명</th><th scope="col">인증</th><th scope="col">벌금</th><th scope="col">납부</th></tr></thead><tbody>${state.members.map(m=>`<tr><td>${esc(m.nickname)}${m.id===state.viewer?.id?' <span class="badge green">나</span>':''}</td><td>${m.approved_count}/${m.target_days}일</td><td>${m.settlement_status==='final'?money(m.fine):`<span class="muted text-small">${m.settlement_status==='pending'?'검토 중':'집계 중'}</span>`}</td><td>${m.settlement_status!=='final'?'<span class="muted">—</span>':!m.fine?'<span class="badge green">없음</span>':state.viewer?.is_admin?`<label class="payment-toggle"><input type="checkbox" aria-label="${esc(m.nickname)} 벌금 납부 완료" data-payment="${m.id}" ${m.paid?'checked':''}>${m.paid?'완료':'벌금'}</label>`:`<span class="badge ${m.paid?'green':'orange'}">${m.paid?'완료':'벌금'}</span>`}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">정산 내역 없음</div>'}`;
+  return `${weekbar()}${!state.closed?'<p class="settlement-status"><span class="badge">집계 중</span></p>':''}${state.totals.pending?`<p class="settlement-status"><span class="badge orange">확인 대기 ${state.totals.pending}건</span></p>`:''}<div class="summary-grid"><div><small>확정 벌금</small><strong>${Number(state.totals.fine||0).toLocaleString()}<small>원</small></strong></div><div><small>납부 완료</small><strong>${Number(state.totals.paid||0).toLocaleString()}<small>원</small></strong></div><div><small>벌금</small><strong>${Number(state.totals.unpaid||0).toLocaleString()}<small>원</small></strong></div></div>${state.members.length?`<div class="table-wrap"><table class="settlement-table"><thead><tr><th scope="col">별명</th><th scope="col">인증</th><th scope="col">벌금</th><th scope="col">납부</th></tr></thead><tbody>${state.members.map(m=>`<tr><td>${esc(m.nickname)}${m.id===state.viewer?.id?' <span class="badge green">나</span>':''}</td><td>${m.approved_count}/${m.target_days}일</td><td>${m.settlement_status==='final'?money(m.fine):`<span class="muted text-small">${m.settlement_status==='pending'?'검토 중':'집계 중'}</span>`}</td><td>${m.settlement_status!=='final'?'<span class="muted">—</span>':!m.fine?'<span class="badge green">없음</span>':state.viewer?.is_admin?`<label class="payment-toggle"><input type="checkbox" aria-label="${esc(m.nickname)} 벌금 납부 완료" data-payment="${m.id}" ${m.paid?'checked':''}>${m.paid?'완료':'벌금'}</label>`:`<span class="badge ${m.paid?'green':'orange'}">${m.paid?'완료':'벌금'}</span>`}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">정산 내역 없음</div>'}`;
 }
 function admin() {
  const pending=state.members.flatMap(m=>m.days.filter(d=>d.submission?.status==='pending').map(d=>({member:m,day:d})));
- return `<div class="admin-tools"><button class="quiet" data-action="admin-codes">${adminCodesVisible?'식별코드 숨기기':'별명별 식별코드 보기'}</button><button class="quiet" data-action="tab" data-tab="settlement">벌금 납부 체크</button><button class="quiet" data-action="admin-logout">운영자 모드 종료</button></div><div id="admin-codes"></div>${weekbar()}<section class="card"><div class="section-head"><h2>인증 확인 대기</h2><span class="badge orange">${pending.length}건</span></div>${pending.length?pending.map(({member:m,day:d})=>`<div class="review-row"><div><strong>${esc(m.nickname)}</strong><p>${d.date}</p></div><button class="secondary" data-action="day" data-member="${m.id}" data-date="${d.date}">사진 검토</button></div>`).join(''):'<p class="muted text-small">대기 없음</p>'}</section><div class="member-grid">${state.members.map(m=>memberCard(m)).join('')}</div>`;
+ return `<div class="admin-tools"><button class="quiet" data-action="tab" data-tab="share-edit">인증 공유</button><button class="quiet" data-action="share">정산 링크</button><button class="quiet" data-action="admin-codes">${adminCodesVisible?'식별코드 숨기기':'별명별 식별코드 보기'}</button><button class="quiet" data-action="tab" data-tab="settlement">벌금 납부 체크</button><button class="quiet" data-action="admin-logout">운영자 모드 종료</button></div><div id="admin-codes"></div>${weekbar()}<section class="card"><div class="section-head"><h2>인증 확인 대기</h2><span class="badge orange">${pending.length}건</span></div>${pending.length?pending.map(({member:m,day:d})=>`<div class="review-row"><div><strong>${esc(m.nickname)}</strong><p>${d.date}</p></div><button class="secondary" data-action="day" data-member="${m.id}" data-date="${d.date}">사진 검토</button></div>`).join(''):'<p class="muted text-small">대기 없음</p>'}</section><div class="member-grid">${state.members.map(m=>memberCard(m)).join('')}</div>`;
 }
 function render() {
- if(tab==='admin'&&!state.viewer?.is_admin) tab='home';
- $('#app').innerHTML=`<div class="shell"><header class="header"><button class="brand" data-action="home" aria-label="영써티 홈"><span class="brand-mark" aria-hidden="true">✓</span>영써티 <small class="brand-en">engthirty</small></button><div class="header-actions">${state.viewer?.is_admin?'<span class="admin-pill">운영자</span>':''}<button class="user-button" data-action="${state.viewer?'profile':'auth'}">${state.viewer?esc(state.viewer.nickname)+' 님':'참여하기'}</button></div></header><nav class="nav" aria-label="주 메뉴">${[['home','내 인증'],['overview','전체 현황'],['settlement','주간 정산'],['share','공유'],...(state.viewer?.is_admin?[['admin','운영']]:[])].map(([id,label])=>`<button data-action="tab" data-tab="${id}" class="${tab===id?'active':''}" ${tab===id?'aria-current="page"':''}>${label}</button>`).join('')}</nav><main id="main" tabindex="-1">${({home,overview,settlement,admin,share:sharePage})[tab]()}</main><footer class="footer">${guide()}<button data-action="admin-entry">${state.viewer?.is_admin?'운영 관리':'운영자 입장'}</button></footer></div>`;
+ if(['admin','share-edit'].includes(tab)&&!state.viewer?.is_admin) tab='home';
+ $('#app').innerHTML=`<div class="shell"><header class="header"><button class="brand" data-action="home" aria-label="영써티 홈"><span class="brand-mark" aria-hidden="true">✓</span>영써티 <small class="brand-en">engthirty</small></button><div class="header-actions">${state.viewer?.is_admin?'<span class="admin-pill">운영자</span>':''}<button class="user-button" data-action="${state.viewer?'profile':'auth'}">${state.viewer?esc(state.viewer.nickname)+' 님':'참여하기'}</button></div></header><nav class="nav" aria-label="주 메뉴">${[['home','내 인증'],['overview','전체 현황'],['settlement','주간 정산'],...(state.viewer?.is_admin?[['admin','운영']]:[])].map(([id,label])=>`<button data-action="tab" data-tab="${id}" class="${(tab===id||(id==='admin'&&tab==='share-edit'))?'active':''}" ${(tab===id||(id==='admin'&&tab==='share-edit'))?'aria-current="page"':''}>${label}</button>`).join('')}</nav><main id="main" tabindex="-1">${({home,overview,settlement,admin,share:sharePage,'share-edit':shareEditor})[tab]()}</main><footer class="footer">${guide()}<button data-action="admin-entry">${state.viewer?.is_admin?'운영 관리':'운영자 입장'}</button></footer></div>`;
  if(tab==='admin'&&adminCodesVisible) loadCodes().catch(error=>toast(error.message));
 }
 function auth(mode='login') {
@@ -121,6 +121,7 @@ async function loadCodes() {
 }
 async function navigateWeek(week) { selectedWeek=week; const url=new URL(location.href);url.searchParams.set('week',week);history.replaceState(null,'',url); await refresh(); }
 async function share() {
+ requireShareAdmin();
  const url=new URL(location.href);url.search='';url.searchParams.set('week',state.week);
  const text=`${shortDate(state.week)} — ${shortDate(state.week_end)} 스터디 정산`;
  if(navigator.share) {try{await navigator.share({title:'영써티 · 주간 정산',text,url:url.href});}catch(error){if(error.name!=='AbortError')throw error;}}
@@ -194,18 +195,21 @@ dialog.addEventListener('close',()=>{if(photoObjectURL){URL.revokeObjectURL(phot
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state&&!dialog.open)refresh().catch(()=>{});});
 (async()=>{try{await session();await refresh();}catch(error){$('#app').innerHTML=`<div class="shell"><main class="loading"><div class="error-panel">${esc(error.message)}<p class="help">페이지를 새로고침해서 다시 시도해 주세요.</p></div></main></div>`;}})();
 
-function sharePage(){
+function shareEditor(){
+ requireShareAdmin();
  const chosen=state.members.filter(m=>selectedPeople.has(m.id));
- return `${weekbar()}<div class="share-picker">${state.members.map(m=>`<label><input type="checkbox" data-share-person="${m.id}" ${selectedPeople.has(m.id)?'checked':''}> ${esc(m.nickname)}</label>`).join('')}</div><div class="admin-tools"><button class="primary" data-action="export-image" ${chosen.length?'':'disabled'}>이미지 저장</button><button class="secondary" data-action="share-week" ${chosen.length?'':'disabled'}>공유 링크</button></div><div class="member-grid">${chosen.map(m=>memberCard(m)).join('')}</div>`;
+ return `<button class="link-button" data-action="tab" data-tab="admin">‹ 운영</button>${weekbar()}<div class="share-picker">${state.members.map(m=>`<label><input type="checkbox" data-share-person="${m.id}" ${selectedPeople.has(m.id)?'checked':''}> ${esc(m.nickname)}</label>`).join('')}</div><div class="admin-tools"><button class="primary" data-action="export-image" ${chosen.length?'':'disabled'}>이미지 저장</button><button class="secondary" data-action="share-week" ${chosen.length?'':'disabled'}>공유 링크</button></div><div class="member-grid">${chosen.map(m=>memberCard(m)).join('')}</div>`;
 }
-document.addEventListener('change',event=>{const input=event.target;if(!input.matches('[data-share-person]'))return;const id=Number(input.dataset.sharePerson);input.checked?selectedPeople.add(id):selectedPeople.delete(id);render();});
+document.addEventListener('change',event=>{const input=event.target;if(!input.matches('[data-share-person]')||!state.viewer?.is_admin||tab!=='share-edit')return;const id=Number(input.dataset.sharePerson);input.checked?selectedPeople.add(id):selectedPeople.delete(id);render();});
 async function shareWeekLink(){
- const url=new URL(location.origin);url.searchParams.set('week',state.week);url.searchParams.set('view','share');url.searchParams.set('members',[...selectedPeople].join(','));
+ requireShareAdmin();
+ const url=new URL(location.origin);url.searchParams.set('week',state.week);url.searchParams.set('view','share');url.searchParams.set('members',state.members.filter(m=>selectedPeople.has(m.id)).map(m=>m.id).join(','));
  if(navigator.share){try{await navigator.share({title:'영써티 주간 인증',url:url.href});}catch(e){if(e.name!=='AbortError')throw e;}}
  else if(navigator.clipboard){await navigator.clipboard.writeText(url.href);toast('링크 복사 완료');}
  else showDialog('공유 링크',`<input aria-label="공유 링크" readonly value="${esc(url.href)}">`);
 }
 async function exportWeekImage(){
+ requireShareAdmin();
  const members=state.members.filter(m=>selectedPeople.has(m.id));if(!members.length)return;
  await document.fonts.ready;
  const canvas=document.createElement('canvas');canvas.width=1000;canvas.height=160+members.length*180;
@@ -214,5 +218,18 @@ async function exportWeekImage(){
  members.forEach((m,i)=>{const y=160+i*180;c.fillStyle='#20372e';c.font='bold 24px sans-serif';c.fillText(m.nickname,40,y,650);c.font='22px sans-serif';c.fillText(`${m.approved_count}/${m.target_days}일`,830,y);
  m.days.forEach((d,j)=>{const x=40+j*132;c.fillStyle=({approved:'#e8f3eb',pending:'#fff5df',missed:'#fbeeea',rejected:'#fbeeea',rest:'#edf1f6'})[d.status]||'#eef0ed';c.fillRect(x,y+18,120,85);c.fillStyle='#20372e';c.font='18px sans-serif';c.fillText(`${['월','화','수','목','금','토','일'][j]} ${Number(d.date.slice(-2))}`,x+12,y+46);c.fillText(statusInfo[d.status][1],x+12,y+80);});
  });
- const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw new Error('이미지 저장 실패');const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`engthirty-${state.week}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('이미지 저장 완료');
+ const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.92));if(!blob)throw new Error('이미지 저장 실패');
+ requireShareAdmin();
+ const file=new File([blob],`engthirty-${state.week}.jpg`,{type:'image/jpeg'});
+ const url=canvas.toDataURL('image/jpeg',.92), canShare=navigator.canShare?.({files:[file]})&&navigator.share;
+ showDialog('주간 인증 이미지',`<img class="photo" src="${url}" alt="선택한 참여자의 주간 인증 현황">${helpToggle('저장 안내','<p>아이폰에서는 이미지를 길게 눌러 사진에 저장하거나 이미지 공유를 눌러 저장하세요.</p>')}<div class="dialog-actions"><a class="secondary image-download" href="${url}" download="${file.name}">JPG 저장</a>${canShare?'<button class="primary" id="share-image-file">이미지 공유</button>':''}</div>`);
+ if(canShare)$('#share-image-file').onclick=async()=>{try{requireShareAdmin();await navigator.share({files:[file]});}catch(error){if(error.name!=='AbortError')formError(error.message);}};
+}
+
+function requireShareAdmin(){
+ if(!state.viewer?.is_admin)throw new Error('운영자 인증이 필요합니다.');
+}
+function sharePage(){
+ const chosen=state.members.filter(m=>selectedPeople.has(m.id));
+ return `<div class="weekbar"><strong>${shortDate(state.week)} — ${shortDate(state.week_end)}</strong></div><div class="member-grid">${chosen.length?chosen.map(m=>memberCard(m)).join(''):'<div class="empty">공유된 인증 내역 없음</div>'}</div>`;
 }
