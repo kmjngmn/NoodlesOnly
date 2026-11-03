@@ -142,10 +142,10 @@ class StudyAppTests(unittest.TestCase):
         registered = self.signup()
         self.admin()
         result = self.upload(date='2026-10-04', member_id='999')
-        self.assertEqual(result['status'], 'pending')
+        self.assertEqual(result['status'], 'approved')
         own = self.own()
-        self.assertEqual(own['pending_count'], 1)
-        self.assertEqual(own['approved_count'], 0)
+        self.assertEqual(own['pending_count'], 0)
+        self.assertEqual(own['approved_count'], 1)
         submission = own['days'][0]['submission']
         public = self.app.test_client()
         photo = public.get(submission['photo_url'])
@@ -157,7 +157,7 @@ class StudyAppTests(unittest.TestCase):
         self.upload('red')
         self.assertFalse(first_photo.exists())
         self.assertEqual(len(list((Path(self.directory.name) / 'photos').iterdir())), 1)
-        self.assertEqual(self.own()['pending_count'], 1)
+        self.assertEqual(self.own()['pending_count'], 0)
         self.assertEqual(self.own()['days'][0]['submission']['id'], submission['id'])
         approved = self.call(f"/api/admin/submissions/{submission['id']}", {'status': 'approved'})
         self.assertEqual(approved.status_code, 200)
@@ -191,25 +191,26 @@ class StudyAppTests(unittest.TestCase):
                     self.assertEqual(self.call('/api/admin/payments', {'member_id': mid, 'week': '2026-10-05', 'paid': False}, method='put').status_code, 200)
                     self.assertFalse(self.own('2026-10-05')['paid'])
 
-    def test_pending_closed_week_is_not_payable_and_late_review_keeps_day(self):
+    def test_retroactive_rejection_recalculates_fine_and_clears_payment(self):
         mid = self.signup()['viewer']['id']
-        self.admin()
         self.upload()
         sid = self.own()['days'][0]['submission']['id']
-        for week in ('2026-10-05', '2026-10-12'):
-            if week == '2026-10-12':
-                self.instant = datetime(2026, 10, 12, 0, 1, tzinfo=KST)
-            response = self.call('/api/admin/payments', {'member_id': mid, 'week': '2026-10-05', 'paid': True}, method='put')
-            self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.call(f'/api/admin/submissions/{sid}', {'status': 'rejected'}).status_code, 403)
+        self.admin()
+        self.instant = datetime(2026, 10, 12, 0, 1, tzinfo=KST)
+        self.assertEqual(self.own('2026-10-05')['fine'], 5000)
+        payment = {'member_id': mid, 'week': '2026-10-05', 'paid': True}
+        self.assertEqual(self.call('/api/admin/payments', payment, method='put').status_code, 200)
+        self.assertTrue(self.own('2026-10-05')['paid'])
+        self.assertEqual(self.call(f'/api/admin/submissions/{sid}', {'status': 'rejected', 'reason': '다른 날짜'}).status_code, 200)
         result = self.own('2026-10-05')
-        self.assertEqual(result['settlement_status'], 'pending')
-        self.assertIsNone(result['fine'])
-        self.assertEqual(self.state()['unpaid'], [])
+        self.assertEqual(result['fine'], 6000)
+        self.assertFalse(result['paid'])
+        self.assertEqual(result['approved_count'], 0)
+        self.assertEqual(result['days'][0]['submission']['status'], 'rejected')
+        self.assertEqual(result['days'][0]['date'], '2026-10-05')
         self.assertEqual(self.call(f'/api/admin/submissions/{sid}', {'status': 'approved'}).status_code, 200)
-        result = self.own('2026-10-05')
-        self.assertEqual(result['days'][0]['status'], 'approved')
-        self.assertEqual(result['fine'], 5000)
-        self.assertEqual(result['settlement_status'], 'final')
+        self.assertEqual(self.own('2026-10-05')['fine'], 5000)
 
     def test_midweek_join_and_automatic_rest(self):
         self.instant = datetime(2026, 10, 8, 12, tzinfo=KST)
@@ -257,8 +258,8 @@ class StudyAppTests(unittest.TestCase):
         after = self.state()
         self.assertEqual(after['today'], '2026-10-12')
         self.assertEqual(after['current_week'], '2026-10-12')
-        self.assertEqual(self.own()['days'][0]['status'], 'pending')
-        self.assertEqual(self.own('2026-10-05')['days'][6]['status'], 'pending')
+        self.assertEqual(self.own()['days'][0]['status'], 'approved')
+        self.assertEqual(self.own('2026-10-05')['days'][6]['status'], 'approved')
 
     def test_rejected_photo_is_public_and_retention_preserves_records(self):
         self.instant = datetime(2026, 10, 31, 12, tzinfo=KST)
@@ -303,7 +304,7 @@ class StudyAppTests(unittest.TestCase):
         self.assertEqual(rebuilt.cleanup_photos(), 1)
         self.assertEqual(rebuilt.cleanup_photos(), 0)
         saved = client.get('/api/state?week=2026-10-05').json['members'][0]['days'][0]['submission']
-        self.assertEqual(saved['status'], 'pending')
+        self.assertEqual(saved['status'], 'approved')
         self.assertFalse(saved['has_photo'])
 
     def test_server_compression_keeps_detailed_photo_under_two_mb(self):
@@ -331,45 +332,38 @@ class StudyAppTests(unittest.TestCase):
         self.assertEqual(self.own()['pending_count'], 0)
         self.assertEqual(list((Path(self.directory.name) / 'photos').iterdir()), [])
 
-    def test_vision_requires_clear_matching_date_and_outages_save_pending(self):
+    def test_uploads_are_approved_without_external_review_even_if_reused(self):
         self.signup()
-        with patch.dict('os.environ', {'STUDY_VISION_API_KEY': 'test-placeholder'}):
-            for result, status in (({'clear': True, 'latest_date': '2026-10-05'}, 'approved'),
-                                   ({'clear': True, 'latest_date': '2026-10-04'}, 'pending'),
-                                   ({'clear': True, 'latest_date': '2026-10-06'}, 'pending'),
-                                   ({'clear': False, 'latest_date': '2026-10-05'}, 'pending')):
-                response = io.BytesIO(json.dumps({'choices': [{'message': {'content': json.dumps(result)}}]}).encode())
-                with patch('urllib.request.urlopen', return_value=response):
-                    self.assertEqual(self.upload()['status'], status)
-            with patch('urllib.request.urlopen', side_effect=TimeoutError()):
-                self.assertEqual(self.upload()['status'], 'pending')
-
-    def test_vision_response_after_midnight_preserves_received_day(self):
-        self.instant = datetime(2026, 10, 11, 23, 59, 59, tzinfo=KST)
-        self.signup()
-        def slow_response(*args, **kwargs):
-            self.instant += timedelta(seconds=2)
-            return io.BytesIO(json.dumps({'choices': [{'message': {'content':
-                '{"clear": true, "latest_date": "2026-10-11"}'}}]}).encode())
-        with patch.dict('os.environ', {'STUDY_VISION_API_KEY': 'test-placeholder'}):
-            with patch('urllib.request.urlopen', side_effect=slow_response):
+        with patch.dict('os.environ', {'STUDY_VISION_API_KEY': 'unused-test-key'}):
+            with patch('urllib.request.urlopen', side_effect=TimeoutError()) as remote:
                 self.assertEqual(self.upload()['status'], 'approved')
-        self.assertEqual(self.state()['today'], '2026-10-12')
-        previous = self.own('2026-10-05')['days'][6]
-        self.assertEqual(previous['status'], 'approved')
-        self.assertTrue(previous['submission']['submitted_at'].startswith('2026-10-11'))
-        self.assertEqual(self.own()['approved_count'], 0)
-
-    def test_same_picture_on_different_day_goes_to_review(self):
-        self.signup()
-        with patch.dict('os.environ', {'STUDY_VISION_API_KEY': 'test-placeholder'}):
-            response = io.BytesIO(json.dumps({'choices': [{'message': {'content': '{"clear": true, "latest_date": "2026-10-05"}'}}]}).encode())
-            with patch('urllib.request.urlopen', return_value=response):
+                self.instant += timedelta(days=1)
                 self.assertEqual(self.upload()['status'], 'approved')
-            self.instant += timedelta(days=1)
-            with patch('urllib.request.urlopen') as remote:
-                self.assertEqual(self.upload()['status'], 'pending')
                 remote.assert_not_called()
+        self.assertEqual(self.own()['approved_count'], 2)
+        self.assertEqual(self.own()['pending_count'], 0)
+
+    def test_legacy_pending_approved_but_rejections_and_unrelated_payments_preserved(self):
+        mid = self.signup()['viewer']['id']
+        self.upload()
+        self.instant += timedelta(days=1)
+        self.upload('red')
+        path = Path(self.directory.name) / 'study.sqlite3'
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE submissions SET status='pending',reason='확인 대기' WHERE day='2026-10-05'")
+            db.execute("UPDATE submissions SET status='rejected',reason='운영자 반려' WHERE day='2026-10-06'")
+            for week in ('2026-10-05', '2026-09-28'):
+                db.execute('INSERT INTO payments VALUES (?,?,?,?)', (mid, week, 5000, self.instant.isoformat()))
+        rebuilt = create_app(self.config)
+        state = rebuilt.test_client().get('/api/state').json['members'][0]
+        self.assertEqual(state['days'][0]['status'], 'approved')
+        self.assertEqual(state['days'][0]['submission']['reason'], '')
+        self.assertEqual(state['days'][1]['status'], 'rejected')
+        self.assertEqual(state['days'][1]['submission']['reason'], '운영자 반려')
+        with sqlite3.connect(path) as db:
+            self.assertEqual(db.execute('SELECT week FROM payments').fetchall(), [('2026-09-28',)])
+        create_app(self.config)  # Re-running the migration must not approve rejected records.
+        self.assertEqual(rebuilt.test_client().get('/api/state').json['members'][0]['days'][1]['status'], 'rejected')
 
 
 if __name__ == '__main__':
