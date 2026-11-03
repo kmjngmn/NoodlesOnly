@@ -22,7 +22,11 @@ class PostgresConnection:
 
         options = conninfo_to_dict(dsn)
         options['sslmode'] = 'verify-full'
-        options.setdefault('sslrootcert', os.environ.get('SSL_CERT_FILE') or 'system')
+        if options.get('host', '').endswith(('.pooler.supabase.com', '.supabase.co')):
+            default_ca = str(Path(__file__).with_name('certs') / 'supabase-prod-ca-2021.crt')
+        else:
+            default_ca = os.environ.get('SSL_CERT_FILE') or 'system'
+        options.setdefault('sslrootcert', default_ca)
         options.setdefault('connect_timeout', 10)
         self.connection = psycopg.connect(
             **options, autocommit=False, prepare_threshold=None, row_factory=dict_row)

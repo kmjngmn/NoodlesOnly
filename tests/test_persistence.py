@@ -3,12 +3,24 @@ import json
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from persistence import PostgresConnection, StorageError, SupabasePhotoStore, _NoRedirect
 
 
 class PersistentStorageTests(unittest.TestCase):
+    def test_supabase_connection_uses_official_ca_and_preserves_explicit_ca(self):
+        with patch('psycopg.connect') as connect:
+            connection = PostgresConnection('postgresql://app@aws-0-eu-west-1.pooler.supabase.com:6543/postgres')
+            options = connect.call_args.kwargs
+            self.assertEqual(options['sslmode'], 'verify-full')
+            self.assertTrue(Path(options['sslrootcert']).is_file())
+            self.assertEqual(Path(options['sslrootcert']).name, 'supabase-prod-ca-2021.crt')
+            connection.close()
+            PostgresConnection('postgresql://app@aws-0-eu-west-1.pooler.supabase.com/postgres?sslrootcert=/custom/ca.pem')
+            self.assertEqual(connect.call_args.kwargs['sslrootcert'], '/custom/ca.pem')
+
     def setUp(self):
         self.store = SupabasePhotoStore('https://test-project.supabase.co', 'server-test-key')
         self.store.opener = MagicMock()
