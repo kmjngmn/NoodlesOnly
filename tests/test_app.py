@@ -1,5 +1,7 @@
 import io
 import json
+import random
+import sqlite3
 import secrets
 import tempfile
 import unittest
@@ -9,7 +11,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from app import KST, create_app, three_months
+from app import KST, MAX_PHOTO_BYTES, create_app
 
 
 class StudyAppTests(unittest.TestCase):
@@ -268,7 +270,7 @@ class StudyAppTests(unittest.TestCase):
         with self.client.get(record['photo_url']) as photo:
             self.assertEqual(photo.status_code, 200)
         self.assertEqual(self.own()['days'][5]['submission']['reason'], '다른 날짜')
-        self.instant = datetime(2027, 1, 30, 23, 59, tzinfo=KST)
+        self.instant = datetime(2026, 11, 21, 11, 59, tzinfo=KST)
         self.assertEqual(self.app.cleanup_photos(), 0)
         self.instant += timedelta(minutes=1)
         self.assertEqual(self.client.get(record['photo_url']).status_code, 404)
@@ -278,7 +280,48 @@ class StudyAppTests(unittest.TestCase):
         self.assertFalse(retained['has_photo'])
         self.assertEqual(retained['status'], 'rejected')
         self.assertEqual(retained['reason'], '다른 날짜')
-        self.assertEqual(three_months(date(2026, 11, 30)), date(2027, 2, 28))
+
+    def test_existing_photos_migrate_to_21_days_without_losing_records(self):
+        self.signup()
+        self.upload()
+        record = self.own()['days'][0]['submission']
+        path = Path(self.directory.name) / 'study.sqlite3'
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE submissions SET expires_on='2027-01-05'")
+            db.execute("UPDATE photo_objects SET expires_on='2027-01-05'")
+        self.instant += timedelta(days=21, seconds=-1)
+        rebuilt = create_app(self.config)
+        client = rebuilt.test_client()
+        with client.get(record['photo_url']) as photo:
+            self.assertEqual(photo.status_code, 200)
+        with sqlite3.connect(path) as db:
+            expiry = db.execute('SELECT expires_on FROM submissions').fetchone()[0]
+            self.assertEqual(expiry, '2026-10-26T12:00:00+09:00')
+            self.assertEqual(db.execute('SELECT expires_on FROM photo_objects').fetchone()[0], expiry)
+        self.instant += timedelta(seconds=1)
+        self.assertEqual(client.get(record['photo_url']).status_code, 404)
+        self.assertEqual(rebuilt.cleanup_photos(), 1)
+        self.assertEqual(rebuilt.cleanup_photos(), 0)
+        saved = client.get('/api/state?week=2026-10-05').json['members'][0]['days'][0]['submission']
+        self.assertEqual(saved['status'], 'pending')
+        self.assertFalse(saved['has_photo'])
+
+    def test_server_compression_keeps_detailed_photo_under_two_mb(self):
+        self.signup()
+        pixels = random.Random(42).randbytes(1800 * 1800 * 3)
+        picture = Image.frombytes('RGB', (1800, 1800), pixels)
+        source = io.BytesIO()
+        picture.save(source, 'JPEG', quality=100)
+        source.seek(0)
+        response = self.client.post('/api/submissions', data={'photo': (source, 'detail.jpg')},
+                                    headers={'X-CSRF-Token': self.csrf})
+        self.assertEqual(response.status_code, 201, response.json)
+        record = self.own()['days'][0]['submission']
+        with self.client.get(record['photo_url']) as photo:
+            self.assertLessEqual(len(photo.data), MAX_PHOTO_BYTES)
+            with Image.open(io.BytesIO(photo.data)) as saved:
+                self.assertEqual(saved.format, 'JPEG')
+                self.assertEqual(saved.size, (1800, 1800))
 
     def test_invalid_image_does_not_create_submission(self):
         self.signup()

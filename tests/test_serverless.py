@@ -50,7 +50,7 @@ class ServerlessTests(unittest.TestCase):
             response = client.get(photo)
             self.assertEqual(response.status_code, 200)
             response.close()
-            clock[0] = datetime(2026, 4, 30, 12, tzinfo=KST)
+            clock[0] = datetime(2026, 2, 21, 12, tzinfo=KST)
             self.assertEqual(client.get(photo).status_code, 404)
             self.assertEqual(client.get('/api/cron/cleanup').status_code, 403)
             cron_headers = {'Authorization': 'Bearer ' + secret}

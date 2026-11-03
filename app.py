@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import calendar
 import hashlib
 import hmac
 import io
@@ -25,17 +24,13 @@ from persistence import PostgresConnection, SupabasePhotoStore, StorageError
 
 KST = ZoneInfo('Asia/Seoul')
 ROOT = Path(__file__).resolve().parent
+PHOTO_RETENTION = timedelta(days=21)
+MAX_PHOTO_BYTES = 2_000_000
 Image.MAX_IMAGE_PIXELS = 25_000_000
 
 
 def monday(day):
     return day - timedelta(days=day.weekday())
-
-
-def three_months(day):
-    month = day.month + 2
-    year, month = day.year + month // 12, month % 12 + 1
-    return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
 
 
 def create_app(config=None):
@@ -135,6 +130,13 @@ def create_app(config=None):
         ''')
 
         with db():
+            # Convert the previous three-month date-only policy for existing photos.
+            for row in db().execute("SELECT id,photo,submitted_at,expires_on FROM submissions WHERE photo IS NOT NULL AND length(expires_on)=10").fetchall():
+                expiry = (datetime.fromisoformat(row['submitted_at']).astimezone(KST) + PHOTO_RETENTION).isoformat()
+                db().execute('UPDATE submissions SET expires_on=? WHERE id=? AND photo=? AND expires_on=?',
+                             (expiry, row['id'], row['photo'], row['expires_on']))
+                db().execute('UPDATE photo_objects SET expires_on=? WHERE photo=? AND expires_on>?',
+                             (expiry, row['photo'], expiry))
             db().execute("""INSERT INTO photo_objects(photo,expires_on)
                             SELECT photo,expires_on FROM submissions
                             WHERE photo IS NOT NULL AND expires_on IS NOT NULL
@@ -229,7 +231,7 @@ def create_app(config=None):
     def discard_photo(name):
         # Keep a retry record until the physical deletion succeeds.
         with db():
-            db().execute('UPDATE photo_objects SET expires_on=? WHERE photo=?', (today().isoformat(), name))
+            db().execute('UPDATE photo_objects SET expires_on=? WHERE photo=?', (now().isoformat(), name))
         try:
             remove_photo(name)
         except (StorageError, OSError):
@@ -242,7 +244,7 @@ def create_app(config=None):
         with app.app_context():
             with db():
                 rows = db().execute('SELECT photo FROM photo_objects WHERE expires_on<=?',
-                                    (today().isoformat(),)).fetchall()
+                                    (now().isoformat(),)).fetchall()
                 for row in rows:
                     remove_photo(row['photo'])
                     db().execute('UPDATE submissions SET photo=NULL WHERE photo=?', (row['photo'],))
@@ -407,7 +409,7 @@ def create_app(config=None):
     def photo_dict(row):
         if not row:
             return None
-        visible = bool(row['photo'] and row['expires_on'] > today().isoformat())
+        visible = bool(row['photo'] and row['expires_on'] > now().isoformat())
         return dict(id=row['id'], photo_url=f"/photos/{row['id']}" if visible else None,
                     has_photo=visible, status=row['status'], reason=row['reason'], submitted_at=row['submitted_at'])
 
@@ -480,7 +482,7 @@ def create_app(config=None):
     @app.get('/photos/<int:sid>')
     def photo(sid):
         row = db().execute('SELECT * FROM submissions WHERE id=?', (sid,)).fetchone()
-        if not row or not row['photo'] or row['expires_on'] <= today().isoformat():
+        if not row or not row['photo'] or row['expires_on'] <= now().isoformat():
             fail('보관 기간이 지났거나 사진이 없습니다.', 404)
         if photo_store:
             try:
@@ -535,9 +537,14 @@ def create_app(config=None):
                     fail('JPG, PNG, WebP 사진을 선택해 주세요.')
                 picture = ImageOps.exif_transpose(original).convert('RGB')
                 picture.thumbnail((1800, 1800))
-                buffer = io.BytesIO()
-                picture.save(buffer, format='JPEG', quality=85)
-                blob = buffer.getvalue()
+                for quality in (85, 75, 65, 55):
+                    buffer = io.BytesIO()
+                    picture.save(buffer, format='JPEG', quality=quality)
+                    blob = buffer.getvalue()
+                    if len(blob) <= MAX_PHOTO_BYTES:
+                        break
+                if len(blob) > MAX_PHOTO_BYTES:
+                    fail('사진을 2MB 이하로 압축할 수 없습니다. 더 작은 사진을 선택해 주세요.', 413)
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning):
             fail('사진 파일을 읽을 수 없습니다. 다른 JPG 또는 PNG 파일을 선택해 주세요.')
         digest = hashlib.sha256(blob).hexdigest()
@@ -546,7 +553,7 @@ def create_app(config=None):
         filename = secrets.token_hex(24) + '.jpg'
         with db():
             db().execute('INSERT INTO photo_objects VALUES (?,?)',
-                         (filename, three_months(received.date()).isoformat()))
+                         (filename, (received + PHOTO_RETENTION).isoformat()))
         if photo_store:
             photo_store.put(filename, blob)
         else:
@@ -560,7 +567,7 @@ def create_app(config=None):
                                 VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(member_id,day) DO UPDATE SET
                                 status=excluded.status,reason=excluded.reason,photo=excluded.photo,photo_hash=excluded.photo_hash,
                                 submitted_at=excluded.submitted_at,expires_on=excluded.expires_on''',
-                             (mid, day, status, reason, filename, digest, received.isoformat(), three_months(received.date()).isoformat()))
+                             (mid, day, status, reason, filename, digest, received.isoformat(), (received + PHOTO_RETENTION).isoformat()))
                 db().execute('DELETE FROM rests WHERE member_id=? AND day=?', (mid, day))
                 db().execute('DELETE FROM payments WHERE member_id=? AND week=?', (mid, monday(received.date()).isoformat()))
         except Exception:

@@ -37,7 +37,7 @@ const errorBox = '<p class="form-error" role="alert"></p>';
 function formError(message) { const target=$('.form-error',dialog); if(target) target.textContent=message; else toast(message); }
 function helpToggle(title, content) { return `<details class="guide"><summary>${esc(title)}</summary><div class="guide-content">${content}</div></details>`; }
 function guide() {
- return helpToggle('이용 안내', `<p>당일 학습 표시와 연도·월이 보이는 월간 달력을 제출합니다. 하루 한 장, 한국 시간 자정 마감이며 당일 교체할 수 있습니다.</p><p>월~일 기준 주 6일 인증. 미인증일 중 하루는 자동 휴식, 나머지는 하루 1,000원입니다. 첫 주는 가입일부터 계산합니다.</p><p>확인 대기는 승인 후 반영됩니다. 주간 마감과 사진 검토가 끝나면 벌금이 확정되며, 운영자가 납부를 체크합니다.</p><p>날짜를 누르면 사진을 볼 수 있습니다. 사진과 정산은 누구나 열람할 수 있습니다. 사진은 3개월 보관하며 인증·정산 기록은 유지됩니다.</p>${legend()}${state.viewer?.is_admin?'<p>운영자는 인증·휴식일을 수정할 수 있습니다. 기록 검토·수정 시 해당 주의 납부 확인이 초기화됩니다.</p>':''}`);
+ return helpToggle('이용 안내', `<p>당일 학습 표시와 연도·월이 보이는 월간 달력을 제출합니다. 하루 한 장, 한국 시간 자정 마감이며 당일 교체할 수 있습니다.</p><p>월~일 기준 주 6일 인증. 미인증일 중 하루는 자동 휴식, 나머지는 하루 1,000원입니다. 첫 주는 가입일부터 계산합니다.</p><p>확인 대기는 승인 후 반영됩니다. 주간 마감과 사진 검토가 끝나면 벌금이 확정되며, 운영자가 납부를 체크합니다.</p><p>날짜를 누르면 사진을 볼 수 있습니다. 사진과 정산은 누구나 열람할 수 있습니다. 사진은 업로드 후 3주(21일)가 지나면 삭제되며 인증·정산 기록은 유지됩니다.</p>${legend()}${state.viewer?.is_admin?'<p>운영자는 인증·휴식일을 수정할 수 있습니다. 기록 검토·수정 시 해당 주의 납부 확인이 초기화됩니다.</p>':''}`);
 }
 function legend() { return '<div class="legend" aria-label="기록 표시 안내"><span><i class="dot dot-approved"></i>인증</span><span><i class="dot dot-pending"></i>확인 대기</span><span><i class="dot dot-missed"></i>미인증·반려</span><span><i class="dot dot-rest"></i>휴식</span></div>'; }
 function weekbar() { return `<div class="weekbar"><div class="week-picker"><button data-action="week-prev" aria-label="지난주">‹</button><strong>${shortDate(state.week)} — ${shortDate(state.week_end)}</strong><button data-action="week-next" aria-label="다음 주" ${state.week>=state.current_week?'disabled':''}>›</button></div>${state.week!==state.current_week?'<button class="link-button" data-action="week-current">이번 주</button>':`<span class="badge ${state.closed?'':'green'}">${state.closed?'정산 주간':'이번 주'}</span>`}</div>`; }
@@ -87,11 +87,17 @@ async function uploadJPEG(file) {
   const scale=Math.min(1,1800/Math.max(picture.width,picture.height)), canvas=document.createElement('canvas');
   canvas.width=Math.max(1,Math.round(picture.width*scale));canvas.height=Math.max(1,Math.round(picture.height*scale));
   const context=canvas.getContext('2d');
-  context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);
-  context.drawImage(picture,0,0,canvas.width,canvas.height);
-  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.85));
-  if(!blob||blob.size>3*1024*1024) throw new Error();
-  return blob;
+  while(true){
+   context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);
+   context.drawImage(picture,0,0,canvas.width,canvas.height);
+   for(const quality of [.85,.75,.65]){
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+    if(!blob||blob.type!=='image/jpeg')throw new Error();
+    if(blob.size<=2000000)return blob;
+   }
+   if(canvas.width===1&&canvas.height===1)throw new Error();
+   canvas.width=Math.max(1,Math.floor(canvas.width*.8));canvas.height=Math.max(1,Math.floor(canvas.height*.8));
+  }
  }catch {throw new Error('사진을 처리할 수 없습니다. 다른 사진을 선택해 주세요.');}
  finally {picture?.close?.();if(objectURL)URL.revokeObjectURL(objectURL);}
 }
@@ -184,7 +190,7 @@ $('#photo-input').addEventListener('change',event=>{
  if(file.size>10*1024*1024){toast('사진은 10MB 이하로 선택해 주세요.');event.target.value='';return;}
  if(!['image/jpeg','image/png','image/webp'].includes(file.type)){toast('JPG, PNG, WebP 사진을 선택해 주세요.');event.target.value='';return;}
  if(photoObjectURL)URL.revokeObjectURL(photoObjectURL);photoObjectURL=URL.createObjectURL(file);
- showDialog('오늘의 인증 사진',`<img class="photo" src="${photoObjectURL}" alt="업로드할 인증 사진 미리보기">${helpToggle('사진 안내',`<p>${shortDate(state.today)} 학습 표시와 연도·월이 보이는 월간 달력을 제출하세요. 사진은 누구나 열람할 수 있고 3개월간 보관됩니다.</p>`)}<form id="upload-form">${errorBox}<div class="dialog-actions"><button type="button" class="secondary" data-action="close">취소</button><button type="submit" class="primary">사진 올리기</button></div></form>`);
+ showDialog('오늘의 인증 사진',`<img class="photo" src="${photoObjectURL}" alt="업로드할 인증 사진 미리보기">${helpToggle('사진 안내',`<p>${shortDate(state.today)} 학습 표시와 연도·월이 보이는 월간 달력을 제출하세요. 사진은 2MB 이하로 압축해 업로드되며 누구나 열람할 수 있습니다. 업로드 후 3주(21일)가 지나면 삭제됩니다.</p>`)}<form id="upload-form">${errorBox}<div class="dialog-actions"><button type="button" class="secondary" data-action="close">취소</button><button type="submit" class="primary">사진 올리기</button></div></form>`);
 });
 document.addEventListener('change',async event=>{
  const input=event.target;if(!input.matches('[data-payment]'))return;
