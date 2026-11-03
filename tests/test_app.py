@@ -64,6 +64,32 @@ class StudyAppTests(unittest.TestCase):
         response = self.call('/api/admin/records', {'member_id': mid, 'date': day, 'status': status}, method='put')
         self.assertEqual(response.status_code, 200, response.json)
 
+    def test_retirement_revokes_code_and_session_preserves_history(self):
+        owner = self.signup('운영자')
+        other = self.app.test_client()
+        person = self.signup('참여자', client=other)
+        mid = person['viewer']['id']
+        path = f'/api/admin/members/{mid}'
+        self.assertEqual(self.call(path, method='delete').status_code, 403)
+        self.admin()
+        self.record(mid, '2026-10-05')
+        self.assertEqual(self.call(f"/api/admin/members/{owner['viewer']['id']}", method='delete').status_code, 400)
+        self.instant += timedelta(days=2)
+        self.assertEqual(self.call(path, method='delete').status_code, 200)
+        self.assertIsNone(other.get('/api/session').json['viewer'])
+        self.assertEqual(self.call('/api/login', {'code': person['code']}, client=other).status_code, 401)
+        self.assertEqual(self.call('/api/profile', {'nickname': '변경'}, method='patch', client=other).status_code, 401)
+        ended = next(m for m in self.state()['members'] if m['id'] == mid)
+        self.assertEqual(ended['approved_count'], 1)
+        self.assertEqual(ended['target_days'], 2)
+        self.assertTrue(all(d['status'] == 'inactive' for d in ended['days'][3:]))
+        codes = self.client.get('/api/admin/members').json
+        self.assertIsNone(next(m for m in codes if m['id'] == mid)['code'])
+        self.instant += timedelta(days=7)
+        self.assertNotIn(mid, [m['id'] for m in self.state()['members']])
+        historical = next(m for m in self.state('2026-10-05')['members'] if m['id'] == mid)
+        self.assertEqual(historical['fine'], 1000)
+
     def test_signup_auth_public_privacy_and_csrf(self):
         self.assertEqual(self.client.post('/api/register', json={'nickname': 'x'}).status_code, 403)
         registered = self.signup()

@@ -140,6 +140,13 @@ def create_app(config=None):
                             WHERE photo IS NOT NULL AND expires_on IS NOT NULL
                             ON CONFLICT(photo) DO NOTHING""")
 
+    with app.app_context():
+        with db():
+            if remote:
+                db().execute('ALTER TABLE members ADD COLUMN IF NOT EXISTS ended_on TEXT')
+            elif 'ended_on' not in [r['name'] for r in db().execute('PRAGMA table_info(members)')]:
+                db().execute('ALTER TABLE members ADD COLUMN ended_on TEXT')
+
     def admin_hash():
         return env_admin_hash or (admin_file.read_text().strip() if not remote and admin_file.exists() else None)
 
@@ -152,7 +159,7 @@ def create_app(config=None):
         return hmac.new(app.secret_key.encode(), (env_password or saved).encode(), hashlib.sha256).hexdigest()
 
     def viewer():
-        row = db().execute('SELECT id,nickname FROM members WHERE id=?', (session.get('member_id'),)).fetchone()
+        row = db().execute('SELECT id,nickname FROM members WHERE id=? AND ended_on IS NULL', (session.get('member_id'),)).fetchone()
         return {**dict(row), 'is_admin': is_admin()} if row else None
 
     def require_member():
@@ -341,7 +348,7 @@ def create_app(config=None):
         code = body().get('code')
         if not isinstance(code, str) or len(code) != 4 or not code.isascii() or not code.isdigit():
             fail('4자리 숫자 코드를 입력해 주세요.')
-        who = db().execute('SELECT id FROM members WHERE code=?', (code,)).fetchone()
+        who = db().execute('SELECT id FROM members WHERE code=? AND ended_on IS NULL', (code,)).fetchone()
         if not who:
             fail('일치하는 코드를 찾지 못했습니다.', 401)
         session.pop('admin_until', None)
@@ -382,7 +389,20 @@ def create_app(config=None):
     @app.get('/api/admin/members')
     def admin_members():
         require_admin()
-        return jsonify([dict(r) for r in db().execute('SELECT id,nickname,code FROM members ORDER BY id')])
+        return jsonify([dict(r) for r in db().execute('SELECT id,nickname,CASE WHEN ended_on IS NULL THEN code ELSE NULL END AS code,ended_on FROM members ORDER BY id')])
+
+    @app.delete('/api/admin/members/<int:mid>')
+    def retire_member(mid):
+        require_admin()
+        if mid == session.get('member_id'):
+            fail('현재 운영자 계정은 종료할 수 없습니다.')
+        who = member(mid)
+        if not who['ended_on']:
+            # End today, preserving today's proof and all historical settlement records.
+            with db():
+                db().execute('UPDATE members SET ended_on=? WHERE id=?', (today().isoformat(), mid))
+                invalidate(mid, today().isoformat())
+        return jsonify(ok=True)
 
     def photo_dict(row):
         if not row:
@@ -394,11 +414,12 @@ def create_app(config=None):
     def week_member(who, week):
         end, current = week + timedelta(days=6), today()
         joined = date.fromisoformat(who['joined_on'])
+        ended = date.fromisoformat(who['ended_on']) if who['ended_on'] else date.max
         rows = {r['day']: r for r in db().execute('SELECT * FROM submissions WHERE member_id=? AND day BETWEEN ? AND ?',
                                                  (who['id'], week.isoformat(), end.isoformat()))}
         rest_row = db().execute('SELECT day FROM rests WHERE member_id=? AND week=?', (who['id'], week.isoformat())).fetchone()
         rest = rest_row['day'] if rest_row else None
-        eligible = [week + timedelta(days=i) for i in range(7) if week + timedelta(days=i) >= joined]
+        eligible = [week + timedelta(days=i) for i in range(7) if joined <= week + timedelta(days=i) <= ended]
         target = max(0, len(eligible) - 1)
         approved = sum(r['status'] == 'approved' for r in rows.values())
         pending = sum(r['status'] == 'pending' for r in rows.values())
@@ -418,7 +439,7 @@ def create_app(config=None):
             day = week + timedelta(days=i)
             key = day.isoformat()
             row = rows.get(key)
-            if day < joined:
+            if day < joined or day > ended:
                 status = 'inactive'
             elif row and row['status'] in ('approved', 'pending'):
                 status = row['status']
@@ -429,7 +450,7 @@ def create_app(config=None):
             else:
                 status = 'missed' if day < current else ('open' if day == current else 'upcoming')
             days.append(dict(date=key, status=status, submission=photo_dict(row), rest_manual=bool(rest_row and key == rest_row['day'])))
-        return dict(id=who['id'], nickname=who['nickname'], joined_on=who['joined_on'], days=days,
+        return dict(id=who['id'], nickname=who['nickname'], joined_on=who['joined_on'], ended_on=who['ended_on'], days=days,
                     approved_count=approved, target_days=target, fine=fine, provisional_fine=provisional,
                     pending_count=pending, settlement_status='pending' if closed and pending else ('final' if closed else 'in_progress'),
                     paid=paid, paid_at=paid_row['paid_at'] if paid else None)
@@ -438,7 +459,7 @@ def create_app(config=None):
     def state():
         week = parse_week(request.args.get('week', monday(today()).isoformat()))
         people = db().execute('SELECT * FROM members ORDER BY id').fetchall()
-        members = [week_member(who, week) for who in people]
+        members = [week_member(who, week) for who in people if not who['ended_on'] or who['ended_on'] >= week.isoformat()]
         unpaid = []
         who = viewer()
         if who:
@@ -578,7 +599,7 @@ def create_app(config=None):
         value = body()
         who = member(value.get('member_id'))
         day = parse_day(value.get('date'))
-        if not date.fromisoformat(who['joined_on']) <= day <= today():
+        if not date.fromisoformat(who['joined_on']) <= day <= min(today(), date.fromisoformat(who['ended_on']) if who['ended_on'] else today()):
             fail('가입일 이후부터 오늘까지의 기록만 수정할 수 있습니다.')
         status = value.get('status')
         if status not in ('approved', 'rejected', 'absent'):
@@ -611,7 +632,7 @@ def create_app(config=None):
         week = parse_week(value.get('week'))
         day = parse_day(value['date']) if value.get('date') else None
         if day:
-            if not week <= day <= week + timedelta(days=6) or day < date.fromisoformat(who['joined_on']):
+            if not week <= day <= week + timedelta(days=6) or day < date.fromisoformat(who['joined_on']) or (who['ended_on'] and day.isoformat() > who['ended_on']):
                 fail('해당 주의 가입일 이후 날짜를 선택해 주세요.')
             existing = db().execute('SELECT status FROM submissions WHERE member_id=? AND day=?', (who['id'], day.isoformat())).fetchone()
             if existing and existing['status'] in ('approved', 'pending'):

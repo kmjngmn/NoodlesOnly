@@ -5,8 +5,9 @@ const money = n => Number(n || 0).toLocaleString('ko-KR') + '원';
 const asDate = d => new Date(d + 'T12:00:00+09:00');
 const shortDate = d => asDate(d).toLocaleDateString('ko-KR', {timeZone:'Asia/Seoul',month:'numeric',day:'numeric'}).replace(/\.$/, '');
 const shiftDate = (d,n) => { const date=asDate(d); date.setUTCDate(date.getUTCDate()+n); return date.toISOString().slice(0,10); };
-const statusInfo = {approved:['✓','인증'],pending:['·','확인 대기'],rejected:['×','반려'],missed:['−','미인증'],rest:['☾','휴식'],upcoming:['·','예정'],inactive:['—','참여 전'],open:['+','오늘']};
-let state, csrf, selectedWeek = new URLSearchParams(location.search).get('week') || '', tab = selectedWeek ? 'settlement' : 'home', busy = false, toastTimer, authIntent = false, photoObjectURL, adminCodesVisible = false, refreshId = 0;
+const statusInfo = {approved:['✓','인증'],pending:['·','확인 대기'],rejected:['×','반려'],missed:['−','미인증'],rest:['☾','휴식'],upcoming:['·','예정'],inactive:['—','대상 아님'],open:['+','오늘']};
+let selectedPeople=new Set((new URLSearchParams(location.search).get('members')||'').split(',').filter(Boolean).map(Number));
+let state, csrf, selectedWeek = new URLSearchParams(location.search).get('week') || '', tab = new URLSearchParams(location.search).get('view')==='share'?'share':selectedWeek ? 'settlement' : 'home', busy = false, toastTimer, authIntent = false, photoObjectURL, adminCodesVisible = false, refreshId = 0;
 const dialog = $('#dialog');
 async function api(path, {method='GET', body}={}) {
   const options = {method, credentials:'same-origin', headers:{}};
@@ -63,7 +64,7 @@ function admin() {
 }
 function render() {
  if(tab==='admin'&&!state.viewer?.is_admin) tab='home';
- $('#app').innerHTML=`<div class="shell"><header class="header"><button class="brand" data-action="home" aria-label="하루인증 홈"><span class="brand-mark" aria-hidden="true">✓</span>하루인증</button><div class="header-actions">${state.viewer?.is_admin?'<span class="admin-pill">운영자</span>':''}<button class="user-button" data-action="${state.viewer?'profile':'auth'}">${state.viewer?esc(state.viewer.nickname)+' 님':'참여하기'}</button></div></header><nav class="nav" aria-label="주 메뉴">${[['home','내 인증'],['overview','전체 현황'],['settlement','주간 정산'],...(state.viewer?.is_admin?[['admin','운영']]:[])].map(([id,label])=>`<button data-action="tab" data-tab="${id}" class="${tab===id?'active':''}" ${tab===id?'aria-current="page"':''}>${label}</button>`).join('')}</nav><main id="main" tabindex="-1">${({home,overview,settlement,admin})[tab]()}</main><footer class="footer">${guide()}<button data-action="admin-entry">${state.viewer?.is_admin?'운영 관리':'운영자 입장'}</button></footer></div>`;
+ $('#app').innerHTML=`<div class="shell"><header class="header"><button class="brand" data-action="home" aria-label="영써티 홈"><span class="brand-mark" aria-hidden="true">✓</span>영써티 <small class="brand-en">engthirty</small></button><div class="header-actions">${state.viewer?.is_admin?'<span class="admin-pill">운영자</span>':''}<button class="user-button" data-action="${state.viewer?'profile':'auth'}">${state.viewer?esc(state.viewer.nickname)+' 님':'참여하기'}</button></div></header><nav class="nav" aria-label="주 메뉴">${[['home','내 인증'],['overview','전체 현황'],['settlement','주간 정산'],['share','공유'],...(state.viewer?.is_admin?[['admin','운영']]:[])].map(([id,label])=>`<button data-action="tab" data-tab="${id}" class="${tab===id?'active':''}" ${tab===id?'aria-current="page"':''}>${label}</button>`).join('')}</nav><main id="main" tabindex="-1">${({home,overview,settlement,admin,share:sharePage})[tab]()}</main><footer class="footer">${guide()}<button data-action="admin-entry">${state.viewer?.is_admin?'운영 관리':'운영자 입장'}</button></footer></div>`;
  if(tab==='admin'&&adminCodesVisible) loadCodes().catch(error=>toast(error.message));
 }
 function auth(mode='login') {
@@ -116,13 +117,13 @@ async function loadCodes() {
  const result=await api('/api/admin/members');
  if(!adminCodesVisible||tab!=='admin'||!state.viewer?.is_admin)return;
  const members=Array.isArray(result)?result:result.members;
- const container=$('#admin-codes'); if(container) container.innerHTML=`<section class="card"><h3>별명별 식별코드</h3><div class="code-list">${members.map(m=>`<div class="code-row"><span>${esc(m.nickname)}</span><code>${esc(m.code)}</code></div>`).join('')}</div></section>`;
+ const container=$('#admin-codes'); if(container) container.innerHTML=`<section class="card"><h3>별명별 식별코드</h3><div class="code-list">${members.map(m=>`<div class="code-row"><span>${esc(m.nickname)}</span><code>${m.ended_on?'참여 종료':esc(m.code)}</code>${!m.ended_on&&m.id!==state.viewer.id?`<button class="link-button" data-action="retire" data-member="${m.id}">참여 종료</button>`:''}</div>`).join('')}</div></section>`;
 }
 async function navigateWeek(week) { selectedWeek=week; const url=new URL(location.href);url.searchParams.set('week',week);history.replaceState(null,'',url); await refresh(); }
 async function share() {
  const url=new URL(location.href);url.search='';url.searchParams.set('week',state.week);
  const text=`${shortDate(state.week)} — ${shortDate(state.week_end)} 스터디 정산`;
- if(navigator.share) {try{await navigator.share({title:'하루인증 · 주간 정산',text,url:url.href});}catch(error){if(error.name!=='AbortError')throw error;}}
+ if(navigator.share) {try{await navigator.share({title:'영써티 · 주간 정산',text,url:url.href});}catch(error){if(error.name!=='AbortError')throw error;}}
  else if(navigator.clipboard) {await navigator.clipboard.writeText(url.href);toast('링크 복사 완료');}
  else {showDialog('정산 링크',`<label class="form-field"><span>링크를 복사해서 공유하세요</span><input value="${esc(url.href)}" readonly></label>`);$('input',dialog).select();}
 }
@@ -131,6 +132,9 @@ document.addEventListener('click',async event=>{
  const action=button.dataset.action;
  try {
   switch(action){
+   case 'retire':if(confirm('이 회원의 코드를 비활성화할까요? 기존 기록은 보존되며 내일부터 인증 의무가 종료됩니다.')){await api('/api/admin/members/'+button.dataset.member,{method:'DELETE'});await refresh();toast('참여 종료');}break;
+   case 'export-image':await exportWeekImage();break;
+   case 'share-week':await shareWeekLink();break;
    case 'close':closeDialog();break;
    case 'home':case 'week-current':if(action==='home')tab='home';await navigateWeek(state.current_week);break;
    case 'tab':tab=button.dataset.tab;if(tab==='home')await navigateWeek(state.current_week);else render();break;
@@ -189,3 +193,26 @@ document.addEventListener('change',async event=>{
 dialog.addEventListener('close',()=>{if(photoObjectURL){URL.revokeObjectURL(photoObjectURL);photoObjectURL=null;}});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state&&!dialog.open)refresh().catch(()=>{});});
 (async()=>{try{await session();await refresh();}catch(error){$('#app').innerHTML=`<div class="shell"><main class="loading"><div class="error-panel">${esc(error.message)}<p class="help">페이지를 새로고침해서 다시 시도해 주세요.</p></div></main></div>`;}})();
+
+function sharePage(){
+ const chosen=state.members.filter(m=>selectedPeople.has(m.id));
+ return `${weekbar()}<div class="share-picker">${state.members.map(m=>`<label><input type="checkbox" data-share-person="${m.id}" ${selectedPeople.has(m.id)?'checked':''}> ${esc(m.nickname)}</label>`).join('')}</div><div class="admin-tools"><button class="primary" data-action="export-image" ${chosen.length?'':'disabled'}>이미지 저장</button><button class="secondary" data-action="share-week" ${chosen.length?'':'disabled'}>공유 링크</button></div><div class="member-grid">${chosen.map(m=>memberCard(m)).join('')}</div>`;
+}
+document.addEventListener('change',event=>{const input=event.target;if(!input.matches('[data-share-person]'))return;const id=Number(input.dataset.sharePerson);input.checked?selectedPeople.add(id):selectedPeople.delete(id);render();});
+async function shareWeekLink(){
+ const url=new URL(location.origin);url.searchParams.set('week',state.week);url.searchParams.set('view','share');url.searchParams.set('members',[...selectedPeople].join(','));
+ if(navigator.share){try{await navigator.share({title:'영써티 주간 인증',url:url.href});}catch(e){if(e.name!=='AbortError')throw e;}}
+ else if(navigator.clipboard){await navigator.clipboard.writeText(url.href);toast('링크 복사 완료');}
+ else showDialog('공유 링크',`<input aria-label="공유 링크" readonly value="${esc(url.href)}">`);
+}
+async function exportWeekImage(){
+ const members=state.members.filter(m=>selectedPeople.has(m.id));if(!members.length)return;
+ await document.fonts.ready;
+ const canvas=document.createElement('canvas');canvas.width=1000;canvas.height=160+members.length*180;
+ const c=canvas.getContext('2d');c.fillStyle='#f7f9f7';c.fillRect(0,0,canvas.width,canvas.height);
+ c.fillStyle='#20372e';c.font='bold 36px sans-serif';c.fillText('영써티',40,55);c.font='18px sans-serif';c.fillText('engthirty',165,55);c.font='24px sans-serif';c.fillText(`${state.week} ~ ${state.week_end}`,40,105);
+ members.forEach((m,i)=>{const y=160+i*180;c.fillStyle='#20372e';c.font='bold 24px sans-serif';c.fillText(m.nickname,40,y,650);c.font='22px sans-serif';c.fillText(`${m.approved_count}/${m.target_days}일`,830,y);
+ m.days.forEach((d,j)=>{const x=40+j*132;c.fillStyle=({approved:'#e8f3eb',pending:'#fff5df',missed:'#fbeeea',rejected:'#fbeeea',rest:'#edf1f6'})[d.status]||'#eef0ed';c.fillRect(x,y+18,120,85);c.fillStyle='#20372e';c.font='18px sans-serif';c.fillText(`${['월','화','수','목','금','토','일'][j]} ${Number(d.date.slice(-2))}`,x+12,y+46);c.fillText(statusInfo[d.status][1],x+12,y+80);});
+ });
+ const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw new Error('이미지 저장 실패');const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`engthirty-${state.week}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('이미지 저장 완료');
+}
