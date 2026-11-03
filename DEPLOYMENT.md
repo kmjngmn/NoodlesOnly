@@ -2,7 +2,7 @@
 
 - 공개 주소: https://youngthirty.vercel.app
 - Vercel 프로젝트: youngthirty
-- 상태: Vercel 빌드 READY, 프로덕션 도메인 연결 및 예약 정리 설정 확인. 공개 화면 기능 검증은 작업 환경의 새 도메인 접근 허용 적용 후 진행합니다.
+- 상태: Vercel 빌드 READY, 프로덕션 도메인 연결 및 예약 정리 설정 확인. 2026-11-03 수정 배포 후 실제 요청 로그에서 홈(/), /api/session, /api/state 모두 HTTP200을 확인했습니다. 직접 브라우저 검증은 작업 환경의 새 도메인 접근 제한으로 수행하지 못했습니다.
 - 배포 코드: GitHub `codex/study-app` 브랜치
 - 실제 Supabase: 기존 프로젝트에 `study_app_login` 로그인 역할과 비공개 `study_app` 스키마, 비공개 `proofs` 사진 버킷 추가. 기존 DB 비밀번호는 변경하지 않았습니다.
 
