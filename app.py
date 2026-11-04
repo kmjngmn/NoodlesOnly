@@ -147,10 +147,11 @@ def create_app(config=None):
 
     with app.app_context():
         with db():
-            if remote:
-                db().execute('ALTER TABLE members ADD COLUMN IF NOT EXISTS ended_on TEXT')
-            elif 'ended_on' not in [r['name'] for r in db().execute('PRAGMA table_info(members)')]:
-                db().execute('ALTER TABLE members ADD COLUMN ended_on TEXT')
+            for column in ('ended_on', 'records_deleted_at'):
+                if remote:
+                    db().execute(f'ALTER TABLE members ADD COLUMN IF NOT EXISTS {column} TEXT')
+                elif column not in [r['name'] for r in db().execute('PRAGMA table_info(members)')]:
+                    db().execute(f'ALTER TABLE members ADD COLUMN {column} TEXT')
 
     def admin_hash():
         return env_admin_hash or (admin_file.read_text().strip() if not remote and admin_file.exists() else None)
@@ -204,7 +205,7 @@ def create_app(config=None):
         return result
 
     def member(mid):
-        row = db().execute('SELECT * FROM members WHERE id=?', (mid,)).fetchone()
+        row = db().execute('SELECT * FROM members WHERE id=? AND records_deleted_at IS NULL', (mid,)).fetchone()
         if not row:
             fail('회원을 찾을 수 없습니다.', 404)
         return row
@@ -394,7 +395,7 @@ def create_app(config=None):
     @app.get('/api/admin/members')
     def admin_members():
         require_admin()
-        return jsonify([dict(r) for r in db().execute('SELECT id,nickname,CASE WHEN ended_on IS NULL THEN code ELSE NULL END AS code,ended_on FROM members ORDER BY id')])
+        return jsonify([dict(r) for r in db().execute('SELECT id,nickname,CASE WHEN ended_on IS NULL THEN code ELSE NULL END AS code,ended_on FROM members WHERE records_deleted_at IS NULL ORDER BY id')])
 
     @app.delete('/api/admin/members/<int:mid>')
     def retire_member(mid):
@@ -408,6 +409,39 @@ def create_app(config=None):
                 db().execute('UPDATE members SET ended_on=? WHERE id=?', (today().isoformat(), mid))
                 invalidate(mid, today().isoformat())
         return jsonify(ok=True)
+
+    @app.get('/api/admin/retired')
+    def retired_members():
+        require_admin()
+        week = parse_week(request.args.get('week', monday(today()).isoformat()))
+        people = db().execute('SELECT * FROM members WHERE ended_on IS NOT NULL AND records_deleted_at IS NULL ORDER BY id').fetchall()
+        return jsonify(members=[week_member(who, week) for who in people])
+
+    @app.delete('/api/admin/retired/records')
+    def delete_retired_records():
+        require_admin()
+        ids = body().get('member_ids')
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(type(mid) is not int or mid <= 0 for mid in ids):
+            fail('기록을 삭제할 참여 종료 회원을 선택해 주세요.')
+        ids = list(dict.fromkeys(ids))
+        filenames = []
+        with db():
+            db().execute('BEGIN IMMEDIATE')
+            people = [member(mid) for mid in ids]
+            if any(not who['ended_on'] for who in people):
+                fail('참여 종료 회원의 기록만 삭제할 수 있습니다.')
+            for who in people:
+                mid = who['id']
+                filenames.extend(r['photo'] for r in db().execute('SELECT photo FROM submissions WHERE member_id=? AND photo IS NOT NULL', (mid,)))
+                for table in ('submissions', 'rests', 'payments'):
+                    db().execute(f'DELETE FROM {table} WHERE member_id=?', (mid,))
+                # Reserve disabled identities so old sessions/codes cannot become another account.
+                db().execute('UPDATE members SET records_deleted_at=? WHERE id=?', (now().isoformat(), mid))
+            for name in filenames:
+                db().execute('UPDATE photo_objects SET expires_on=? WHERE photo=?', (now().isoformat(), name))
+        for name in filenames:
+            discard_photo(name)
+        return jsonify(ok=True, deleted=len(ids))
 
     def photo_dict(row):
         if not row:
@@ -463,8 +497,8 @@ def create_app(config=None):
     @app.get('/api/state')
     def state():
         week = parse_week(request.args.get('week', monday(today()).isoformat()))
-        people = db().execute('SELECT * FROM members ORDER BY id').fetchall()
-        members = [week_member(who, week) for who in people if not who['ended_on'] or who['ended_on'] >= week.isoformat()]
+        people = db().execute('SELECT * FROM members WHERE ended_on IS NULL ORDER BY id').fetchall()
+        members = [week_member(who, week) for who in people]
         unpaid = []
         who = viewer()
         if who:
@@ -487,6 +521,11 @@ def create_app(config=None):
         row = db().execute('SELECT * FROM submissions WHERE id=?', (sid,)).fetchone()
         if not row or not row['photo'] or row['expires_on'] <= now().isoformat():
             fail('보관 기간이 지났거나 사진이 없습니다.', 404)
+        owner = member(row['member_id'])
+        if owner['ended_on']:
+            current = viewer()
+            if not current or not current['is_admin']:
+                fail('사진을 찾을 수 없습니다.', 404)
         if photo_store:
             try:
                 return Response(photo_store.get(row['photo']), mimetype='image/jpeg')
@@ -532,6 +571,7 @@ def create_app(config=None):
         try:
             with db():
                 db().execute('BEGIN IMMEDIATE')
+                require_member()  # Reject uploads already in flight when participation ended.
                 old = db().execute('SELECT photo FROM submissions WHERE member_id=? AND day=?', (mid, day)).fetchone()
                 db().execute('''INSERT INTO submissions(member_id,day,status,reason,photo,submitted_at,expires_on)
                                 VALUES (?,?,?,?,?,?,?) ON CONFLICT(member_id,day) DO UPDATE SET
@@ -586,6 +626,8 @@ def create_app(config=None):
             fail('사유는 300자 이하로 입력해 주세요.')
         old_photo = None
         with db():
+            db().execute('BEGIN IMMEDIATE')
+            member(who['id'])  # Do not recreate records deleted by a concurrent admin action.
             if status == 'absent':
                 old = db().execute('SELECT photo FROM submissions WHERE member_id=? AND day=?', (who['id'], day.isoformat())).fetchone()
                 old_photo = old['photo'] if old else None
@@ -615,6 +657,8 @@ def create_app(config=None):
             if existing and existing['status'] in ('approved', 'pending'):
                 fail('인증이 있거나 확인 중인 날은 휴식일로 지정할 수 없습니다.')
         with db():
+            db().execute('BEGIN IMMEDIATE')
+            member(who['id'])
             db().execute('DELETE FROM rests WHERE member_id=? AND week=?', (who['id'], week.isoformat()))
             if day:
                 db().execute('INSERT INTO rests VALUES (?,?,?)', (who['id'], week.isoformat(), day.isoformat()))
@@ -631,7 +675,7 @@ def create_app(config=None):
         # Read and write under the same lock so concurrent review cannot mark a stale amount paid.
         with db():
             db().execute('BEGIN IMMEDIATE')
-            settled = week_member(who, week)
+            settled = week_member(member(who['id']), week)
             if settled['settlement_status'] != 'final' or not settled['fine']:
                 fail('확정된 벌금이 있는 지난주 내역만 납부 처리할 수 있습니다.')
             if value['paid']:

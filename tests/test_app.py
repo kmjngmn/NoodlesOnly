@@ -12,6 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from app import KST, MAX_PHOTO_BYTES, create_app
+from persistence import StorageError
 
 
 class StudyAppTests(unittest.TestCase):
@@ -81,7 +82,8 @@ class StudyAppTests(unittest.TestCase):
         self.assertIsNone(other.get('/api/session').json['viewer'])
         self.assertEqual(self.call('/api/login', {'code': person['code']}, client=other).status_code, 401)
         self.assertEqual(self.call('/api/profile', {'nickname': '변경'}, method='patch', client=other).status_code, 401)
-        ended = next(m for m in self.state()['members'] if m['id'] == mid)
+        self.assertNotIn(mid, [m['id'] for m in self.state()['members']])
+        ended = next(m for m in self.client.get('/api/admin/retired').json['members'] if m['id'] == mid)
         self.assertEqual(ended['approved_count'], 1)
         self.assertEqual(ended['target_days'], 2)
         self.assertTrue(all(d['status'] == 'inactive' for d in ended['days'][3:]))
@@ -89,8 +91,95 @@ class StudyAppTests(unittest.TestCase):
         self.assertIsNone(next(m for m in codes if m['id'] == mid)['code'])
         self.instant += timedelta(days=7)
         self.assertNotIn(mid, [m['id'] for m in self.state()['members']])
-        historical = next(m for m in self.state('2026-10-05')['members'] if m['id'] == mid)
+        self.assertNotIn(mid, [m['id'] for m in self.state('2026-10-05')['members']])
+        historical = next(m for m in self.client.get('/api/admin/retired?week=2026-10-05').json['members'] if m['id'] == mid)
         self.assertEqual(historical['fine'], 1000)
+
+    def test_retired_records_admin_only_and_selected_purge(self):
+        active = self.signup('운영자')
+        active_id = active['viewer']['id']
+        self.admin()
+        people = []
+        for name in ('종료1', '종료2', '보존'):
+            client = self.app.test_client()
+            registered = self.signup(name, client=client)
+            mid = registered['viewer']['id']
+            picture = io.BytesIO()
+            Image.new('RGB', (20, 20), 'blue').save(picture, 'PNG')
+            picture.seek(0)
+            response = client.post('/api/submissions', data={'photo': (picture, 'proof.png')},
+                                   headers={'X-CSRF-Token': client.get('/api/session').json['csrf']})
+            self.assertEqual(response.status_code, 201)
+            photo = next(m for m in self.state()['members'] if m['id'] == mid)['days'][0]['submission']['photo_url']
+            self.assertEqual(self.call(f'/api/admin/members/{mid}', method='delete').status_code, 200)
+            people.append((mid, photo, registered['code']))
+        public = self.app.test_client()
+        self.assertEqual(public.get('/api/admin/retired').status_code, 401)
+        for mid, photo, code in people:
+            self.assertEqual(public.get(photo).status_code, 404)
+            with self.client.get(photo) as response:
+                self.assertEqual(response.status_code, 200)
+        self.instant += timedelta(days=7)
+        self.assertEqual([m['id'] for m in self.state('2026-10-05')['members']], [active_id])
+        self.assertEqual([m['id'] for m in self.state('2026-10-05', client=public)['members']], [active_id])
+        self.assertEqual(self.state('2026-10-05')['totals']['fine'], 6000)
+        archive = self.client.get('/api/admin/retired?week=2026-10-05').json['members']
+        self.assertEqual(len(archive), 3)
+        path = '/api/admin/retired/records'
+        self.assertEqual(self.call(path, {'member_ids': [people[0][0]]}, method='delete', client=public).status_code, 401)
+        self.assertEqual(self.client.delete(path, json={'member_ids': [people[0][0]]}).status_code, 403)
+        for invalid in ([], [True], ['1'], [people[0][0], active_id]):
+            self.assertEqual(self.call(path, {'member_ids': invalid}, method='delete').status_code, 400)
+        self.assertEqual(len(self.client.get('/api/admin/retired').json['members']), 3)
+        # All historical weeks are removed, not just the week displayed by the UI.
+        with sqlite3.connect(Path(self.directory.name) / 'study.sqlite3') as db:
+            db.execute('INSERT INTO payments VALUES (?,?,?,?)', (people[0][0], '2026-09-28', 1000, self.instant.isoformat()))
+            db.execute('INSERT INTO rests VALUES (?,?,?)', (people[0][0], '2026-09-28', '2026-10-01'))
+        selected = [people[0][0], people[1][0]]
+        result = self.call(path, {'member_ids': selected}, method='delete')
+        self.assertEqual(result.status_code, 200, result.json)
+        self.assertEqual(result.json['deleted'], 2)
+        self.assertEqual([m['id'] for m in self.client.get('/api/admin/retired').json['members']], [people[2][0]])
+        with sqlite3.connect(Path(self.directory.name) / 'study.sqlite3') as db:
+            for table in ('submissions', 'payments', 'rests'):
+                self.assertEqual(db.execute(f'SELECT count(*) FROM {table} WHERE member_id IN (?,?)', selected).fetchone()[0], 0)
+        for mid, photo, code in people[:2]:
+            self.assertEqual(self.client.get(photo).status_code, 404)
+            self.assertEqual(self.call('/api/admin/records', {'member_id': mid, 'date': '2026-10-05', 'status': 'approved'}, method='put').status_code, 404)
+            self.assertEqual(self.call('/api/login', {'code': code}, client=public).status_code, 401)
+        self.assertEqual(len(list((Path(self.directory.name) / 'photos').iterdir())), 1)
+        with self.client.get(people[2][1]) as response:
+            self.assertEqual(response.status_code, 200)
+
+    def test_purged_photos_retry_storage_deletion(self):
+        class Store:
+            blobs = {}
+            fail_delete = True
+            def put(self, name, blob): self.blobs[name] = blob
+            def get(self, name): return self.blobs[name]
+            def delete(self, name):
+                if self.fail_delete:
+                    raise StorageError('temporary failure')
+                self.blobs.pop(name, None)
+        store = Store()
+        self.app = create_app({**self.config, 'PHOTO_STORE': store})
+        self.client = self.app.test_client()
+        retired = self.signup('종료')
+        self.upload()
+        photo = self.own()['days'][0]['submission']['photo_url']
+        self.client = self.app.test_client()
+        self.signup('운영자')
+        self.admin()
+        mid = retired['viewer']['id']
+        self.assertEqual(self.call(f'/api/admin/members/{mid}', method='delete').status_code, 200)
+        self.assertEqual(self.call('/api/admin/retired/records', {'member_ids': [mid]}, method='delete').status_code, 200)
+        self.assertEqual(self.client.get(photo).status_code, 404)
+        self.assertEqual(self.client.get('/api/admin/retired').json['members'], [])
+        self.assertEqual(len(store.blobs), 1)
+        store.fail_delete = False
+        self.assertEqual(self.app.cleanup_photos(), 1)
+        self.assertEqual(store.blobs, {})
+        self.assertEqual(self.app.cleanup_photos(), 0)
 
     def test_signup_auth_public_privacy_and_csrf(self):
         self.assertEqual(self.client.post('/api/register', json={'nickname': 'x'}).status_code, 403)

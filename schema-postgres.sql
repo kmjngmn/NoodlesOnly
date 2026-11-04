@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS members (
     nickname TEXT NOT NULL,
     code TEXT NOT NULL UNIQUE,
     joined_on TEXT NOT NULL,
-    ended_on TEXT
+    ended_on TEXT,
+    records_deleted_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS members_nickname_unique ON members (lower(nickname));
 

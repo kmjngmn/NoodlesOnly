@@ -8,6 +8,7 @@ const shiftDate = (d,n) => { const date=asDate(d); date.setUTCDate(date.getUTCDa
 const statusInfo = {approved:['✓','인증'],pending:['·','확인 대기'],rejected:['×','반려'],missed:['−','미인증'],rest:['☾','휴식'],upcoming:['·','예정'],inactive:['—','대상 아님'],open:['+','오늘']};
 let selectedPeople=new Set((new URLSearchParams(location.search).get('members')||'').split(',').filter(Boolean).map(Number));
 let state, csrf, selectedWeek = new URLSearchParams(location.search).get('week') || '', tab = new URLSearchParams(location.search).get('view')==='share'?'share':selectedWeek ? 'settlement' : 'home', busy = false, toastTimer, authIntent = false, photoObjectURL, adminCodesVisible = false, refreshId = 0;
+let retiredVisible=false, retiredMembers=[], selectedRetired=new Set(), retiredRequestId=0, retiredDeleting=false;
 const dialog = $('#dialog');
 async function api(path, {method='GET', body}={}) {
   const options = {method, credentials:'same-origin', headers:{}};
@@ -44,8 +45,8 @@ function weekbar() { return `<div class="weekbar"><div class="week-picker"><butt
 function days(member) {
   return `<div class="days">${member.days.map((day,i)=>{const [symbol,label]=statusInfo[day.status]||statusInfo.missed; return `<div class="day ${day.date===state.today?'today':''}"><div class="day-label">${['월','화','수','목','금','토','일'][i]} <span>${Number(day.date.slice(-2))}</span></div><button class="day-button status-${esc(day.status)}" data-action="day" data-member="${member.id}" data-date="${day.date}" aria-label="${esc(member.nickname)} ${day.date} ${label}${day.rest_manual?' 운영자 지정':''}" ${day.status==='inactive'?'disabled':''}><span aria-hidden="true">${symbol}</span><small>${label}</small></button></div>`;}).join('')}</div>`;
 }
-function memberCard(member, personal=false) {
-  return `<section class="card member-card"><div class="section-head"><div>${personal?'<h2>이번 주</h2>':`<div class="member-title"><h3>${esc(member.nickname)}</h3>${member.id===state.viewer?.id?'<span class="badge green">나</span>':''}</div>`}${personal?`<p>${shortDate(state.week)} — ${shortDate(state.week_end)}</p>`:''}</div><div class="progress-number">${member.approved_count}<small> / ${member.target_days}일</small></div></div>${personal?`<progress class="progress-track" aria-label="이번 주 인증" max="${Math.max(1,member.target_days,member.approved_count)}" value="${member.approved_count}">${member.approved_count}일</progress>`:''}${days(member)}${member.pending_count?`<p class="pending-note">확인 대기 ${member.pending_count}일</p>`:''}${state.viewer?.is_admin?`<div class="member-controls"><button class="link-button" data-action="edit-record" data-member="${member.id}">기록 수정</button><button class="link-button" data-action="edit-rest" data-member="${member.id}">휴식일 설정</button></div>`:''}</section>`;
+function memberCard(member, personal=false, retired=false) {
+  return `<section class="card member-card"><div class="section-head"><div>${personal?'<h2>이번 주</h2>':`<div class="member-title">${retired?`<label class="retired-choice"><input type="checkbox" data-retired-person="${member.id}" ${selectedRetired.has(member.id)?'checked':''}> ${esc(member.nickname)}</label>`:`<h3>${esc(member.nickname)}</h3>`}${member.id===state.viewer?.id?'<span class="badge green">나</span>':''}</div>`}${personal?`<p>${shortDate(state.week)} — ${shortDate(state.week_end)}</p>`:''}</div><div class="progress-number">${member.approved_count}<small> / ${member.target_days}일</small></div></div>${personal?`<progress class="progress-track" aria-label="이번 주 인증" max="${Math.max(1,member.target_days,member.approved_count)}" value="${member.approved_count}">${member.approved_count}일</progress>`:''}${days(member)}${retired?`<p class="photo-details">참여 종료 ${esc(member.ended_on)} · 벌금 ${member.settlement_status==='final'?money(member.fine):'집계 중'}</p>${member.fine?`<label class="payment-toggle"><input type="checkbox" data-payment="${member.id}" aria-label="${esc(member.nickname)} 벌금 납부 완료" ${member.paid?'checked':''}>납부 ${member.paid?'완료':'미확인'}</label>`:''}`:''}${member.pending_count?`<p class="pending-note">확인 대기 ${member.pending_count}일</p>`:''}${state.viewer?.is_admin?`<div class="member-controls"><button class="link-button" data-action="edit-record" data-member="${member.id}">기록 수정</button><button class="link-button" data-action="edit-rest" data-member="${member.id}">휴식일 설정</button></div>`:''}</section>`;
 }
 function home() {
   const mine=state.members.find(m=>m.id===state.viewer?.id), today=mine?.days.find(d=>d.date===state.today);
@@ -59,12 +60,15 @@ function settlement() {
   return `${weekbar()}${!state.closed?'<p class="settlement-status"><span class="badge">집계 중</span></p>':''}${state.totals.pending?`<p class="settlement-status"><span class="badge orange">확인 대기 ${state.totals.pending}건</span></p>`:''}<div class="summary-grid"><div><small>확정 벌금</small><strong>${Number(state.totals.fine||0).toLocaleString()}<small>원</small></strong></div><div><small>납부 완료</small><strong>${Number(state.totals.paid||0).toLocaleString()}<small>원</small></strong></div><div><small>벌금</small><strong>${Number(state.totals.unpaid||0).toLocaleString()}<small>원</small></strong></div></div>${state.members.length?`<div class="table-wrap"><table class="settlement-table"><thead><tr><th scope="col">별명</th><th scope="col">인증</th><th scope="col">벌금</th><th scope="col">납부</th></tr></thead><tbody>${state.members.map(m=>`<tr><td>${esc(m.nickname)}${m.id===state.viewer?.id?' <span class="badge green">나</span>':''}</td><td>${m.approved_count}/${m.target_days}일</td><td>${m.settlement_status==='final'?money(m.fine):`<span class="muted text-small">${m.settlement_status==='pending'?'검토 중':'집계 중'}</span>`}</td><td>${m.settlement_status!=='final'?'<span class="muted">—</span>':!m.fine?'<span class="badge green">없음</span>':state.viewer?.is_admin?`<label class="payment-toggle"><input type="checkbox" aria-label="${esc(m.nickname)} 벌금 납부 완료" data-payment="${m.id}" ${m.paid?'checked':''}>${m.paid?'완료':'벌금'}</label>`:`<span class="badge ${m.paid?'green':'orange'}">${m.paid?'완료':'벌금'}</span>`}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">정산 내역 없음</div>'}`;
 }
 function admin() {
- return `<div class="admin-tools"><button class="quiet" data-action="tab" data-tab="share-edit">인증 공유</button><button class="quiet" data-action="share">정산 링크</button><button class="quiet" data-action="admin-codes">${adminCodesVisible?'식별코드 숨기기':'별명별 식별코드 보기'}</button><button class="quiet" data-action="tab" data-tab="settlement">벌금 납부 체크</button><button class="quiet" data-action="admin-logout">운영자 모드 종료</button></div><div id="admin-codes"></div>${weekbar()}<div class="member-grid">${state.members.map(m=>memberCard(m)).join('')}</div>`;
+ return `<div class="admin-tools"><button class="quiet" data-action="tab" data-tab="share-edit">인증 공유</button><button class="quiet" data-action="share">정산 링크</button><button class="quiet" data-action="admin-codes">${adminCodesVisible?'식별코드 숨기기':'별명별 식별코드 보기'}</button><button class="quiet" data-action="tab" data-tab="settlement">벌금 납부 체크</button><button class="quiet" data-action="admin-retired" aria-expanded="${retiredVisible}" aria-controls="admin-retired">참여 종료 회원 ${retiredVisible?'숨기기':'보기'}</button><button class="quiet" data-action="admin-logout">운영자 모드 종료</button></div><div id="admin-codes"></div>${weekbar()}<div id="admin-retired" ${retiredVisible?'':'hidden'}></div><div class="member-grid">${state.members.map(m=>memberCard(m)).join('')}</div>`;
 }
 function render() {
+ if(!state.viewer?.is_admin){retiredVisible=false;selectedRetired.clear();}
+ if(tab!=='admin'||!retiredVisible){retiredMembers=[];++retiredRequestId;}
  if(['admin','share-edit'].includes(tab)&&!state.viewer?.is_admin) tab='home';
  $('#app').innerHTML=`<div class="shell"><header class="header"><button class="brand" data-action="home" aria-label="영써티 홈"><span class="brand-mark" aria-hidden="true">✓</span>영써티 <small class="brand-en">engthirty</small></button><div class="header-actions">${state.viewer?.is_admin?'<span class="admin-pill">운영자</span>':''}<button class="user-button" data-action="${state.viewer?'profile':'auth'}">${state.viewer?esc(state.viewer.nickname)+' 님':'참여하기'}</button></div></header><nav class="nav" aria-label="주 메뉴">${[['home','내 인증'],['overview','전체 현황'],['settlement','주간 정산'],...(state.viewer?.is_admin?[['admin','운영']]:[])].map(([id,label])=>`<button data-action="tab" data-tab="${id}" class="${(tab===id||(id==='admin'&&tab==='share-edit'))?'active':''}" ${(tab===id||(id==='admin'&&tab==='share-edit'))?'aria-current="page"':''}>${label}</button>`).join('')}</nav><main id="main" tabindex="-1">${({home,overview,settlement,admin,share:sharePage,'share-edit':shareEditor})[tab]()}</main><footer class="footer">${guide()}<button data-action="admin-entry">${state.viewer?.is_admin?'운영 관리':'운영자 입장'}</button></footer></div>`;
  if(tab==='admin'&&adminCodesVisible) loadCodes().catch(error=>toast(error.message));
+ if(tab==='admin'&&retiredVisible) loadRetired();
 }
 function auth(mode='login') {
  showDialog('입장',`<div class="auth-switch"><button data-action="auth-mode" data-mode="login" class="${mode==='login'?'active':''}">코드로 입장</button><button data-action="auth-mode" data-mode="register" class="${mode==='register'?'active':''}">처음 참여</button></div><form id="auth-form" data-mode="${mode}">${mode==='login'?'<label class="form-field"><span>내 식별코드</span><input name="code" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" minlength="4" placeholder="4자리 숫자" autocomplete="off" required autofocus></label>':'<label class="form-field"><span>별명</span><input name="nickname" maxlength="20" placeholder="예: 꾸준이" autocomplete="nickname" required autofocus></label>'}${errorBox}<button class="primary full" type="submit">${mode==='login'?'입장하기':'참여하고 코드 받기'}</button>${helpToggle('계정 안내','<p>같은 기기에서는 입장 상태가 유지됩니다. 다른 기기나 로그아웃 후에는 4자리 코드로 입장합니다. 코드는 본인만 보관하세요.</p>')}</form>`);
@@ -101,16 +105,17 @@ async function uploadJPEG(file) {
  finally {picture?.close?.();if(objectURL)URL.revokeObjectURL(objectURL);}
 }
 function photoDay(memberId,date) {
- const member=state.members.find(m=>m.id===Number(memberId)), day=member?.days.find(d=>d.date===date); if(!day)return;
+ const member=visibleMember(memberId), day=member?.days.find(d=>d.date===date); if(!day)return;
  const s=day.submission, label=statusInfo[day.status]?.[1]||day.status;
  showDialog(`${member.nickname} · ${shortDate(date)}`,`${s?.photo_url?`<img class="photo" src="${esc(s.photo_url)}" alt="${esc(member.nickname)}의 ${date} 인증 사진">`:`<div class="empty">${s?s.has_photo?'사진을 불러올 수 없습니다.':'사진 없음':day.status==='rest'?'휴식':day.status==='upcoming'?'예정':'사진 없음'}</div>`}<div class="record-meta"><span class="badge ${day.status==='approved'?'green':day.status==='pending'?'orange':''}">${label}</span>${day.rest_manual?'<span class="badge">운영자 지정 휴식</span>':''}</div>${s?.reason?helpToggle('검토 내용',`<p>${esc(s.reason)}</p>`):''}${s?.submitted_at?`<p class="photo-details">제출 ${esc(new Date(s.submitted_at).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}))}</p>`:''}${state.viewer?.is_admin&&s?`<form id="review-form" data-id="${s.id}"><label class="form-field"><span>검토 메모 (선택)</span><input name="reason" maxlength="300" placeholder="예: 당일 학습 표시가 확인되지 않아요"></label>${errorBox}<div class="dialog-actions"><button class="secondary danger" type="submit" name="status" value="rejected">반려</button><button class="primary" type="submit" name="status" value="approved">인증 승인</button></div></form>`:''}${state.viewer?.is_admin?`<div class="dialog-actions"><button class="secondary" data-action="edit-record" data-member="${member.id}" data-date="${date}">이 날짜 기록 수정</button></div>`:''}`);
 }
 function editRecord(memberId,date) {
- const member=state.members.find(m=>m.id===Number(memberId));
- showDialog(`${member.nickname} · 기록 수정`,`<form id="record-form"><input type="hidden" name="member_id" value="${member.id}"><label class="form-field"><span>날짜</span><input type="date" name="date" value="${date|| (state.week>member.joined_on?state.week:member.joined_on)}" min="${member.joined_on}" max="${state.today}" required></label><label class="form-field"><span>인증 상태</span><select name="status"><option value="approved">인증 승인</option><option value="rejected">인증 반려</option><option value="absent">미인증 (사진 삭제)</option></select></label><label class="form-field"><span>수정 메모 (선택)</span><textarea name="reason" maxlength="300"></textarea></label>${helpToggle('변경 안내','<p>기록 수정 시 해당 주의 납부 확인이 초기화됩니다. 미인증으로 변경하면 해당 기록과 사진이 삭제됩니다.</p>')}${errorBox}<div class="dialog-actions"><button class="primary" type="submit">변경 저장</button></div></form>`);
+ const member=visibleMember(memberId);if(!member)return;
+ const last=member.ended_on&&member.ended_on<state.today?member.ended_on:state.today, first=state.week>member.joined_on?state.week:member.joined_on;
+ showDialog(`${member.nickname} · 기록 수정`,`<form id="record-form"><input type="hidden" name="member_id" value="${member.id}"><label class="form-field"><span>날짜</span><input type="date" name="date" value="${date||(first>last?last:first)}" min="${member.joined_on}" max="${last}" required></label><label class="form-field"><span>인증 상태</span><select name="status"><option value="approved">인증 승인</option><option value="rejected">인증 반려</option><option value="absent">미인증 (사진 삭제)</option></select></label><label class="form-field"><span>수정 메모 (선택)</span><textarea name="reason" maxlength="300"></textarea></label>${helpToggle('변경 안내','<p>기록 수정 시 해당 주의 납부 확인이 초기화됩니다. 미인증으로 변경하면 해당 기록과 사진이 삭제됩니다.</p>')}${errorBox}<div class="dialog-actions"><button class="primary" type="submit">변경 저장</button></div></form>`);
 }
 function editRest(memberId) {
- const member=state.members.find(m=>m.id===Number(memberId)), rest=member.days.find(d=>d.rest_manual);
+ const member=visibleMember(memberId);if(!member)return;const rest=member.days.find(d=>d.rest_manual);
  showDialog(`${member.nickname} · 휴식일`,`<form id="rest-form"><input type="hidden" name="member_id" value="${member.id}"><p class="text-small muted">${shortDate(state.week)} — ${shortDate(state.week_end)}</p><label class="form-field"><span>휴식일 지정</span><select name="date"><option value="">자동 지정으로 되돌리기</option>${member.days.filter(d=>d.status!=='inactive').map(d=>`<option value="${d.date}" ${rest?.date===d.date?'selected':''}>${shortDate(d.date)} (${['월','화','수','목','금','토','일'][member.days.indexOf(d)]})</option>`).join('')}</select></label>${helpToggle('휴식 안내','<p>주 1일 휴식. 자동 지정은 미인증일 중 하루를 선택합니다. 지정한 날에도 인증을 제출할 수 있습니다.</p>')}${errorBox}<div class="dialog-actions"><button class="primary" type="submit">설정 저장</button></div></form>`);
 }
 function adminLogin() {
@@ -121,7 +126,7 @@ function adminLogin() {
 async function loadCodes() {
  const result=await api('/api/admin/members');
  if(!adminCodesVisible||tab!=='admin'||!state.viewer?.is_admin)return;
- const members=Array.isArray(result)?result:result.members;
+ const members=(Array.isArray(result)?result:result.members).filter(m=>!m.ended_on);
  const container=$('#admin-codes'); if(container) container.innerHTML=`<section class="card"><h3>별명별 식별코드</h3><div class="code-list">${members.map(m=>`<div class="code-row"><span>${esc(m.nickname)}</span><code>${m.ended_on?'참여 종료':esc(m.code)}</code>${!m.ended_on&&m.id!==state.viewer.id?`<button class="link-button" data-action="retire" data-member="${m.id}">참여 종료</button>`:''}</div>`).join('')}</div></section>`;
 }
 async function navigateWeek(week) { selectedWeek=week; const url=new URL(location.href);url.searchParams.set('week',week);history.replaceState(null,'',url); await refresh(); }
@@ -157,6 +162,8 @@ document.addEventListener('click',async event=>{
    case 'admin-entry':adminLogin();break;
    case 'edit-record':editRecord(button.dataset.member,button.dataset.date);break;
    case 'edit-rest':editRest(button.dataset.member);break;
+   case 'admin-retired':retiredVisible=!retiredVisible;render();break;
+   case 'delete-retired':await deleteRetiredRecords();break;
    case 'admin-codes':adminCodesVisible=!adminCodesVisible;render();break;
    case 'logout':await api('/api/logout',{method:'POST'});adminCodesVisible=false;closeDialog();await session();await refresh();toast('로그아웃');break;
    case 'admin-logout':await api('/api/admin/logout',{method:'POST'});adminCodesVisible=false;await session();tab='home';selectedWeek=state.current_week;await refresh();toast('운영자 모드 종료');break;
@@ -238,3 +245,40 @@ function sharePage(){
  const chosen=state.members.filter(m=>selectedPeople.has(m.id));
  return `<div class="weekbar"><strong>${shortDate(state.week)} — ${shortDate(state.week_end)}</strong></div><div class="member-grid">${chosen.length?chosen.map(m=>memberCard(m)).join(''):'<div class="empty">공유된 인증 내역 없음</div>'}</div>`;
 }
+
+function visibleMember(id){
+ return state.members.find(m=>m.id===Number(id))||(state.viewer?.is_admin&&tab==='admin'&&retiredVisible?retiredMembers.find(m=>m.id===Number(id)):null);
+}
+async function loadRetired(){
+ const requestId=++retiredRequestId, week=state.week;
+ retiredMembers=[];
+ const container=$('#admin-retired');
+ container.innerHTML='<p class="muted text-small">불러오는 중…</p>';
+ try{
+  const result=await api('/api/admin/retired?week='+encodeURIComponent(week));
+  if(requestId!==retiredRequestId||!state.viewer?.is_admin||tab!=='admin'||!retiredVisible||state.week!==week)return;
+  retiredMembers=result.members;
+  selectedRetired=new Set([...selectedRetired].filter(id=>retiredMembers.some(m=>m.id===id)));
+  container.innerHTML=retiredMembers.length?`<div class="admin-tools"><button class="secondary danger" data-action="delete-retired" ${selectedRetired.size&&!retiredDeleting?'':'disabled'}>선택 기록 삭제</button></div><div class="member-grid">${retiredMembers.map(m=>memberCard(m,false,true)).join('')}</div>`:'<p class="muted text-small">참여 종료 회원 없음</p>';
+ }catch(error){
+  if(requestId===retiredRequestId&&tab==='admin'&&retiredVisible)container.innerHTML=`<p class="form-error">${esc(error.message)}</p>`;
+ }
+}
+async function deleteRetiredRecords(){
+ if(!state.viewer?.is_admin||tab!=='admin'||!retiredVisible||retiredDeleting)return;
+ const chosen=retiredMembers.filter(m=>selectedRetired.has(m.id));if(!chosen.length)return;
+ if(!confirm(`${chosen.map(m=>m.nickname).join(', ')}\n\n선택한 회원의 모든 주 인증·정산 기록과 사진을 영구 삭제합니다. 되돌릴 수 없습니다.\n삭제할까요?`))return;
+ retiredDeleting=true;const button=$('[data-action="delete-retired"]');button.disabled=true;
+ try{
+  await api('/api/admin/retired/records',{method:'DELETE',body:{member_ids:chosen.map(m=>m.id)}});
+  selectedRetired.clear();await refresh();toast('선택한 회원의 기록 삭제 완료');
+ }finally{
+  retiredDeleting=false;
+  const current=$('[data-action="delete-retired"]');if(current)current.disabled=!selectedRetired.size;
+ }
+}
+document.addEventListener('change',event=>{
+ const input=event.target;if(!input.matches('[data-retired-person]')||!state.viewer?.is_admin||tab!=='admin'||!retiredVisible)return;
+ const id=Number(input.dataset.retiredPerson);input.checked?selectedRetired.add(id):selectedRetired.delete(id);
+ const button=$('[data-action="delete-retired"]');if(button)button.disabled=!selectedRetired.size||retiredDeleting;
+});

@@ -8,3 +8,5 @@ main{min-height:0}.nav{margin-bottom:22px}.upload-date{font-size:16px;letter-spa
 .brand{flex-shrink:0;white-space:nowrap}.header-actions{min-width:0}.user-button{min-width:0}.nav button{white-space:nowrap;flex-shrink:0}@media(max-width:540px){.header{gap:8px;flex-wrap:wrap}.brand{gap:6px}}
 
 .image-download{display:inline-block;text-align:center;text-decoration:none}
+
+#admin-retired:not([hidden]){padding-bottom:24px;margin-bottom:24px;border-bottom:1px solid var(--line)}.retired-choice{display:flex;align-items:center;gap:6px;font-size:16px;font-weight:700;overflow-wrap:anywhere}.retired-choice input{accent-color:var(--green);flex-shrink:0}
